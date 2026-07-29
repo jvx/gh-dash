@@ -749,6 +749,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setCurrentViewSections(newSections)
 		cmds = append(cmds, fetchSectionsCmds, m.doRefreshAtInterval())
 
+	case interface{ ActionSectionID() int }:
+		// Route Actions polling to its originating section even if another
+		// view or section is selected when the timer fires.
+		sectionID := msg.ActionSectionID()
+		if currSection == nil || currSection.GetType() != actionssection.SectionType || currSection.GetId() != sectionID {
+			cmds = append(cmds, m.updateSection(sectionID, actionssection.SectionType, msg))
+		}
+
 	case userFetchedMsg:
 		m.ctx.User = msg.user
 

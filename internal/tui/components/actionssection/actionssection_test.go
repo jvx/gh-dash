@@ -174,3 +174,45 @@ func TestWorkflowRefreshFallsBackToAllAndRefetchesRuns(t *testing.T) {
 	require.NotEqual(t, oldRunTaskID, model.LastFetchTaskId)
 	require.True(t, model.IsLoading)
 }
+
+func TestInProgressRunsPollUntilGitHubReportsCompletion(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	model := NewModel(3, ctx, time.Now())
+	model.LastFetchTaskId = "initial"
+
+	updated, cmd := model.Update(RunsFetchedMsg{
+		TaskID: "initial",
+		Page:   1,
+		Runs:   []data.ActionRun{{ID: 99, Status: "queued"}},
+	})
+	model = *updated.(*Model)
+	require.NotNil(t, cmd)
+	require.True(t, model.pollScheduled)
+	token := model.pollToken
+
+	updated, _ = model.Update(RunsPolledMsg{
+		SectionID: 3,
+		Token:     token,
+		Result: data.ActionRunsResponse{
+			Runs: []data.ActionRun{{ID: 99, Status: "completed", Conclusion: "success"}},
+		},
+	})
+	model = *updated.(*Model)
+	require.Equal(t, "completed", model.Runs[0].Status)
+	require.Equal(t, "success", model.Runs[0].Conclusion)
+	require.False(t, model.pollScheduled)
+}
+
+func TestChangingWorkflowInvalidatesPendingRunsPoll(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	model := NewModel(0, ctx, time.Now())
+	model.Runs = []data.ActionRun{{ID: 99, Status: "in_progress"}}
+	require.NotNil(t, model.scheduleRunsPollIfNeeded())
+	oldToken := model.pollToken
+
+	model.Workflows = []data.Workflow{{ID: 77, Name: "Deploy", State: "active"}}
+	model.workflowCursor = 1
+	require.NotNil(t, model.SelectWorkflow())
+	require.NotEqual(t, oldToken, model.pollToken)
+	require.False(t, model.pollScheduled)
+}

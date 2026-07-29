@@ -28,6 +28,8 @@ const SectionType = "action"
 
 const defaultWorkflowPaneWidth = 28
 
+const runsPollInterval = 5 * time.Second
+
 type Model struct {
 	section.BaseModel
 	Runs []data.ActionRun
@@ -41,6 +43,8 @@ type Model struct {
 	workflowLoadFailed      bool
 	lastWorkflowFetchTaskID string
 	workflowRefreshNeeded   bool
+	pollScheduled           bool
+	pollToken               int64
 }
 
 type RunsFetchedMsg struct {
@@ -63,6 +67,24 @@ type WorkflowsFetchedMsg struct {
 type WorkflowsFetchFailedMsg struct {
 	TaskID string
 }
+
+// RunsPollTickMsg and RunsPolledMsg carry their section ID so the root model can
+// route polling updates even when the user has switched to another view.
+type RunsPollTickMsg struct {
+	SectionID int
+	Token     int64
+}
+
+func (m RunsPollTickMsg) ActionSectionID() int { return m.SectionID }
+
+type RunsPolledMsg struct {
+	SectionID int
+	Token     int64
+	Result    data.ActionRunsResponse
+	Err       error
+}
+
+func (m RunsPolledMsg) ActionSectionID() int { return m.SectionID }
 
 func NewModel(id int, ctx *context.ProgramContext, lastUpdated time.Time) Model {
 	view := config.ActionsView
@@ -129,6 +151,9 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			m.Table.SetRows(m.BuildRows())
 			m.Table.UpdateLastUpdated(time.Now())
 			m.UpdateTotalItemsCount(msg.TotalCount)
+			if msg.Page == 1 {
+				cmd = m.scheduleRunsPollIfNeeded()
+			}
 		}
 	case RunsFetchFailedMsg:
 		if msg.TaskID == m.LastFetchTaskId {
@@ -153,6 +178,27 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 		if msg.TaskID == m.lastWorkflowFetchTaskID {
 			m.workflowsLoading = false
 			m.workflowLoadFailed = true
+		}
+	case RunsPollTickMsg:
+		if msg.Token == m.pollToken && m.pollScheduled {
+			m.pollScheduled = false
+			if m.hasInProgressRuns() {
+				cmd = m.pollRuns(msg.Token)
+			}
+		}
+	case RunsPolledMsg:
+		if msg.Token == m.pollToken {
+			m.pollScheduled = false
+			if msg.Err == nil {
+				m.Runs = msg.Result.Runs
+				m.page = 1
+				m.TotalCount = msg.Result.TotalCount
+				m.PageInfo = &data.PageInfo{HasNextPage: msg.Result.HasNextPage, EndCursor: "2"}
+				m.Table.SetRows(m.BuildRows())
+				m.Table.UpdateLastUpdated(time.Now())
+				m.UpdateTotalItemsCount(msg.Result.TotalCount)
+			}
+			cmd = m.scheduleRunsPollIfNeeded()
 		}
 	case processFinishedMsg:
 		m.ResetRows()
@@ -259,6 +305,7 @@ func Fetch(ctx *context.ProgramContext) (Model, tea.Cmd) {
 }
 
 func (m *Model) resetRuns() {
+	m.cancelRunsPoll()
 	m.Runs = nil
 	m.page = 0
 	m.TotalCount = 0
@@ -266,6 +313,47 @@ func (m *Model) resetRuns() {
 	m.Table.SetRows(nil)
 	m.Table.ResetCurrItem()
 	m.UpdateTotalItemsCount(0)
+}
+
+func (m *Model) hasInProgressRuns() bool {
+	for _, run := range m.Runs {
+		if run.Status != "completed" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Model) cancelRunsPoll() {
+	m.pollScheduled = false
+	m.pollToken = time.Now().UnixNano()
+}
+
+func (m *Model) scheduleRunsPollIfNeeded() tea.Cmd {
+	if m.pollScheduled || !m.hasInProgressRuns() {
+		return nil
+	}
+	m.pollScheduled = true
+	m.pollToken = time.Now().UnixNano()
+	token := m.pollToken
+	sectionID := m.Id
+	return tea.Tick(runsPollInterval, func(time.Time) tea.Msg {
+		return RunsPollTickMsg{SectionID: sectionID, Token: token}
+	})
+}
+
+func (m *Model) pollRuns(token int64) tea.Cmd {
+	workflowID := m.selectedWorkflowID
+	sectionID := m.Id
+	limit := m.Ctx.Config.Defaults.ActionsLimit
+	if limit <= 0 {
+		limit = 25
+	}
+	repo := m.Ctx.GHRepo
+	return func() tea.Msg {
+		result, err := data.FetchActionRuns(repo.Host, repo.Owner, repo.Name, workflowID, limit, 1)
+		return RunsPolledMsg{SectionID: sectionID, Token: token, Result: result, Err: err}
+	}
 }
 
 func (m *Model) ResetRows() {

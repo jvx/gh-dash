@@ -236,11 +236,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		switch {
-		case m.isUserDefinedKeybinding(msg):
+		if m.isUserDefinedKeybinding(msg) {
 			cmd = m.executeKeybinding(msg.String())
 			return m, cmd
+		}
 
+		if m.ctx.View == config.ActionsView {
+			if actionSection, ok := currSection.(*actionssection.Model); ok {
+				if handled, actionCmd := m.handleActionsNavigation(msg, actionSection); handled {
+					return m, actionCmd
+				}
+			}
+		}
+
+		switch {
 		case key.Matches(msg, m.keys.PrevSection):
 			prevSection := m.getSectionAt(m.getPrevSectionId())
 			if prevSection != nil {
@@ -520,13 +529,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, m.openBrowser())
 			case key.Matches(msg, keys.ActionsKeys.Watch):
 				if actionSection != nil {
+					if actionSection.WorkflowsFocused() {
+						return m, m.notifyErr("focus the run list with right/l before watching a run")
+					}
 					return m, actionSection.Watch()
 				}
 			case key.Matches(msg, keys.ActionsKeys.Rerun):
+				if actionSection != nil && actionSection.WorkflowsFocused() {
+					return m, m.notifyErr("focus the run list with right/l before rerunning a run")
+				}
 				return m, m.promptConfirmation(currSection, "rerun")
 			case key.Matches(msg, keys.ActionsKeys.Dispatch):
 				if actionSection != nil {
-					return m, actionSection.Dispatch()
+					if err := actionSection.ValidateDispatch(); err != nil {
+						return m, m.notifyErr(err.Error())
+					}
+					return m, m.promptConfirmation(currSection, "dispatch")
 				}
 			case key.Matches(msg, keys.ActionsKeys.SwitchView):
 				cmds = append(cmds, m.switchSelectedView())
@@ -1075,6 +1093,44 @@ func (m *Model) markNotificationAsRead(notificationId string) {
 		Unread: false,
 	}
 	m.updateNotificationSections(readStateMsg)
+}
+
+func (m *Model) handleActionsNavigation(msg tea.KeyMsg, actionSection *actionssection.Model) (bool, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.ActionsKeys.FocusWorkflows):
+		actionSection.FocusWorkflows()
+		return true, nil
+	case key.Matches(msg, keys.ActionsKeys.FocusRuns):
+		actionSection.FocusRuns()
+		return true, m.syncSidebar()
+	}
+
+	if !actionSection.WorkflowsFocused() {
+		return false, nil
+	}
+
+	switch {
+	case key.Matches(msg, m.keys.Down):
+		actionSection.MoveWorkflowCursor(1)
+		return true, nil
+	case key.Matches(msg, m.keys.Up):
+		actionSection.MoveWorkflowCursor(-1)
+		return true, nil
+	case key.Matches(msg, m.keys.FirstLine):
+		actionSection.FirstWorkflow()
+		return true, nil
+	case key.Matches(msg, m.keys.LastLine):
+		actionSection.LastWorkflow()
+		return true, nil
+	case key.Matches(msg, keys.ActionsKeys.SelectWorkflow):
+		cmd := actionSection.SelectWorkflow()
+		if cmd != nil {
+			m.sidebar.SetContent("")
+		}
+		return true, cmd
+	}
+
+	return false, nil
 }
 
 func (m *Model) onViewedRowChanged() tea.Cmd {

@@ -39,6 +39,7 @@ defaults:
   prsLimit: 100
   issuesLimit: 100
   notificationsLimit: 100
+  actionsLimit: 25
   view: prs
   layout:
     prs:

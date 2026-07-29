@@ -67,6 +67,8 @@ func (a *ViewType) UnmarshalJSON(b []byte) error {
 		*a = IssuesView
 	case "repo":
 		*a = RepoView
+	case "actions":
+		*a = ActionsView
 	}
 
 	return nil
@@ -77,6 +79,7 @@ const (
 	PRsView           ViewType = "prs"
 	IssuesView        ViewType = "issues"
 	RepoView          ViewType = "repo"
+	ActionsView       ViewType = "actions"
 )
 
 type SectionConfig struct {
@@ -189,6 +192,7 @@ type Defaults struct {
 	PrApproveComment       string        `yaml:"prApproveComment,omitempty"`
 	IssuesLimit            int           `yaml:"issuesLimit"`
 	NotificationsLimit     int           `yaml:"notificationsLimit"`
+	ActionsLimit           int           `yaml:"actionsLimit"`
 	View                   ViewType      `yaml:"view"`
 	Layout                 LayoutConfig  `yaml:"layout,omitempty"`
 	RefetchIntervalMinutes int           `yaml:"refetchIntervalMinutes,omitempty"`
@@ -356,6 +360,7 @@ func (parser ConfigParser) getDefaultConfig() Config {
 			PrApproveComment:       "LGTM",
 			IssuesLimit:            20,
 			NotificationsLimit:     20,
+			ActionsLimit:           25,
 			View:                   PRsView,
 			RefetchIntervalMinutes: 30,
 			Layout: LayoutConfig{

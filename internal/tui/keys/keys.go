@@ -86,6 +86,8 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 			additionalKeys = append(additionalKeys, IssueFullHelp()...)
 			customKeys = append(customKeys, CustomIssueBindings...)
 		}
+	case config.ActionsView:
+		additionalKeys = ActionsFullHelp()
 	default:
 		additionalKeys = IssueFullHelp()
 		customKeys = append(customKeys, CustomIssueBindings...)
@@ -120,7 +122,7 @@ func (k KeyMap) NavigationKeys() []key.Binding {
 }
 
 func (k KeyMap) AppKeys() []key.Binding {
-	return []key.Binding{
+	bindings := []key.Binding{
 		k.Refresh,
 		k.RefreshAll,
 		k.TogglePreview,
@@ -128,8 +130,11 @@ func (k KeyMap) AppKeys() []key.Binding {
 		k.OpenGithub,
 		k.CopyNumber,
 		k.CopyUrl,
-		k.Search,
 	}
+	if k.viewType != config.ActionsView {
+		bindings = append(bindings, k.Search)
+	}
+	return bindings
 }
 
 func (k KeyMap) QuitAndHelpKeys() []key.Binding {

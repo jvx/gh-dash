@@ -145,6 +145,18 @@ func TestParser(t *testing.T) {
 		require.Equal(t, NotificationsView, parsed.Defaults.View)
 	})
 
+	t.Run("Should accept actions as the default view", func(t *testing.T) {
+		dir := t.TempDir()
+		configPath := path.Join(dir, "config.yml")
+		err := os.WriteFile(configPath, []byte("defaults:\n  view: actions\n"), 0o600)
+		testutils.AssertNoError(t, err)
+
+		parsed, err := ParseConfig(Location{ConfigFlag: configPath, SkipGlobalConfig: true})
+		testutils.AssertNoError(t, err)
+		require.Equal(t, ActionsView, parsed.Defaults.View)
+		require.Equal(t, 25, parsed.Defaults.ActionsLimit)
+	})
+
 	t.Run("Should merge global config with passed config", func(t *testing.T) {
 		clearEnv := setXDGConfigHomeEnvVar(t, "testdata")
 		defer clearEnv()

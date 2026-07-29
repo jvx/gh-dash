@@ -26,6 +26,8 @@ import (
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
 	"github.com/dlvhdr/gh-dash/v4/internal/git"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/common"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/actionssection"
+	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/actionview"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/branch"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/branchsidebar"
 	"github.com/dlvhdr/gh-dash/v4/internal/tui/components/footer"
@@ -56,12 +58,14 @@ type Model struct {
 	issueSidebar     issueview.Model
 	branchSidebar    branchsidebar.Model
 	notificationView notificationview.Model
+	actionView       actionview.Model
 	currSectionId    int
 	footer           footer.Model
 	repo             section.Section
 	prs              []section.Section
 	issues           []section.Section
 	notifications    []section.Section
+	actions          []section.Section
 	tabs             tabs.Model
 	ctx              *context.ProgramContext
 	taskSpinner      spinner.Model
@@ -110,6 +114,7 @@ func NewModel(location config.Location, repos Repositories) Model {
 	m.issueSidebar = issueview.NewModel(m.ctx)
 	m.branchSidebar = branchsidebar.NewModel(m.ctx)
 	m.notificationView = notificationview.NewModel(m.ctx)
+	m.actionView = actionview.NewModel(m.ctx)
 	m.tabs = tabs.NewModel(m.ctx)
 
 	return m
@@ -321,7 +326,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.ClearScreen
 
 		case key.Matches(msg, m.keys.Search):
-			if currSection != nil {
+			if currSection != nil && m.ctx.View != config.ActionsView {
 				cmd = currSection.SetIsSearching(true)
 				return m, cmd
 			}
@@ -508,6 +513,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, keys.IssueKeys.ViewPRs):
 				cmds = append(cmds, m.switchSelectedView())
 			}
+		case m.ctx.View == config.ActionsView:
+			actionSection, _ := currSection.(*actionssection.Model)
+			switch {
+			case key.Matches(msg, m.keys.OpenGithub):
+				cmds = append(cmds, m.openBrowser())
+			case key.Matches(msg, keys.ActionsKeys.Watch):
+				if actionSection != nil {
+					return m, actionSection.Watch()
+				}
+			case key.Matches(msg, keys.ActionsKeys.Rerun):
+				return m, m.promptConfirmation(currSection, "rerun")
+			case key.Matches(msg, keys.ActionsKeys.Dispatch):
+				if actionSection != nil {
+					return m, actionSection.Dispatch()
+				}
+			case key.Matches(msg, keys.ActionsKeys.SwitchView):
+				cmds = append(cmds, m.switchSelectedView())
+			}
 		case m.ctx.View == config.NotificationsView:
 			switch {
 			case key.Matches(msg, m.keys.OpenGithub):
@@ -686,7 +709,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		newSections, fetchSectionsCmds := m.fetchAllViewSections()
 		m.setCurrentViewSections(newSections)
-		m.tabs.SetCurrSectionId(1)
+		m.tabs.SetCurrSectionId(m.currSectionId)
 
 		if m.ctx.BackgroundSource != "bubbletea" {
 			log.Debugf("Setting markdownStyle in initMsg")
@@ -804,6 +827,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case notificationssection.UpdateNotificationCommentsMsg:
 		cmds = append(cmds, m.updateNotificationSections(msg))
+
+	case actionview.JobsFetchedMsg:
+		m.actionView.SetJobs(msg)
+		m.sidebar.SetContent(m.actionView.View())
 
 	case spinner.TickMsg:
 		if len(m.tasks) > 0 {
@@ -1087,6 +1114,7 @@ func (m *Model) syncProgramContext() {
 	m.issueSidebar.UpdateProgramContext(m.ctx)
 	m.branchSidebar.UpdateProgramContext(m.ctx)
 	m.notificationView.UpdateProgramContext(m.ctx)
+	m.actionView.UpdateProgramContext(m.ctx)
 }
 
 func (m *Model) updateSection(id int, sType string, msg tea.Msg) (cmd tea.Cmd) {
@@ -1106,6 +1134,9 @@ func (m *Model) updateSection(id int, sType string, msg tea.Msg) (cmd tea.Cmd) {
 	case issuessection.SectionType:
 		updatedSection, cmd = m.issues[id].Update(msg)
 		m.issues[id] = updatedSection
+	case actionssection.SectionType:
+		updatedSection, cmd = m.actions[id].Update(msg)
+		m.actions[id] = updatedSection
 	}
 
 	currSection := m.getCurrSection()
@@ -1278,6 +1309,10 @@ func (m *Model) syncSidebar() tea.Cmd {
 		if m.issueSidebar.IsTextInputBoxFocused() {
 			m.sidebar.ScrollToBottom()
 		}
+	case *data.ActionRun:
+		m.actionView.SetWidth(width)
+		cmd = m.actionView.SetRun(row)
+		m.sidebar.SetContent(m.actionView.View())
 	case *notificationrow.Data:
 		notifId := row.GetId()
 
@@ -1512,6 +1547,11 @@ func (m *Model) fetchAllViewSections() ([]section.Section, tea.Cmd) {
 		s, prcmds := prssection.FetchAllSections(m.ctx, m.prs)
 		cmds = append(cmds, prcmds)
 		return s, tea.Batch(cmds...)
+	case config.ActionsView:
+		s, actionCmd := actionssection.Fetch(m.ctx)
+		m.actions = []section.Section{&s}
+		cmds = append(cmds, actionCmd)
+		return m.actions, tea.Batch(cmds...)
 	default:
 		s, issuecmds := issuessection.FetchAllSections(m.ctx)
 		cmds = append(cmds, issuecmds)
@@ -1533,6 +1573,8 @@ func (m *Model) getCurrentViewSections() []section.Section {
 		return m.notifications
 	case config.PRsView:
 		return m.prs
+	case config.ActionsView:
+		return m.actions
 	default:
 		return m.issues
 	}
@@ -1546,6 +1588,8 @@ func (m *Model) getCurrentViewDefaultSection() int {
 		return 1 // First notification section after search section
 	case config.PRsView:
 		return 1
+	case config.ActionsView:
+		return 0
 	default:
 		return 1
 	}
@@ -1553,6 +1597,11 @@ func (m *Model) getCurrentViewDefaultSection() int {
 
 func (m *Model) setCurrentViewSections(newSections []section.Section) {
 	if newSections == nil {
+		return
+	}
+	if m.ctx.View == config.ActionsView {
+		m.actions = newSections
+		m.tabs.SetSections(newSections)
 		return
 	}
 
@@ -1635,7 +1684,7 @@ func (m *Model) switchSelectedView() tea.Cmd {
 		m.notificationView.ClearSubject()
 	}
 
-	// View cycle: Notifications → PRs → Issues (→ Repo if enabled) → Notifications
+	// View cycle: Notifications → PRs → Issues → Actions (→ Repo if enabled) → Notifications
 	if repoFF {
 		switch m.ctx.View {
 		case config.NotificationsView:
@@ -1643,6 +1692,8 @@ func (m *Model) switchSelectedView() tea.Cmd {
 		case config.PRsView:
 			m.ctx.View = config.IssuesView
 		case config.IssuesView:
+			m.ctx.View = config.ActionsView
+		case config.ActionsView:
 			m.ctx.View = config.RepoView
 		case config.RepoView:
 			m.ctx.View = config.NotificationsView
@@ -1653,6 +1704,8 @@ func (m *Model) switchSelectedView() tea.Cmd {
 			m.ctx.View = config.PRsView
 		case config.PRsView:
 			m.ctx.View = config.IssuesView
+		case config.IssuesView:
+			m.ctx.View = config.ActionsView
 		default:
 			m.ctx.View = config.NotificationsView
 		}

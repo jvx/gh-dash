@@ -135,6 +135,10 @@ func (m *Model) renderViewButton(view config.ViewType) string {
 	case config.IssuesView:
 		icon = ""
 		label = " Issues"
+	case config.ActionsView:
+		// Keep the Actions view legible even in terminals without a Nerd Font.
+		icon = "▶"
+		label = " Actions"
 	}
 
 	if isActive {
@@ -184,6 +188,8 @@ func (m *Model) renderViewSwitcher(ctx *context.ProgramContext) string {
 		m.renderViewButton(config.PRsView),
 		ctx.Styles.ViewSwitcher.ViewsSeparator.Render(viewSeparator),
 		m.renderViewButton(config.IssuesView),
+		ctx.Styles.ViewSwitcher.ViewsSeparator.Render(viewSeparator),
+		m.renderViewButton(config.ActionsView),
 		lipgloss.NewStyle().Background(ctx.Styles.Common.FooterStyle.GetBackground()).Foreground(
 			ctx.Styles.ViewSwitcher.ViewsSeparator.GetBackground()).Render(" "),
 		repo,

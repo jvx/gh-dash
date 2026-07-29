@@ -83,8 +83,13 @@ func (ctx *ProgramContext) GetViewSectionsConfig() []config.SectionConfig {
 		for _, cfg := range ctx.Config.IssuesSections {
 			configs = append(configs, cfg.ToSectionConfig())
 		}
+	case config.ActionsView:
+		configs = append(configs, config.SectionConfig{Title: "Workflow Runs"})
 	}
 
+	if ctx.View == config.ActionsView {
+		return configs
+	}
 	return append([]config.SectionConfig{{Title: ""}}, configs...)
 }
 

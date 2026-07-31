@@ -21,13 +21,14 @@ const (
 )
 
 type Task struct {
-	Id           string
-	StartText    string
-	FinishedText string
-	State        State
-	Error        error
-	StartTime    time.Time
-	FinishedTime *time.Time
+	Id                string
+	StartText         string
+	FinishedText      string
+	PersistCompletion bool
+	State             State
+	Error             error
+	StartTime         time.Time
+	FinishedTime      *time.Time
 }
 
 type ProgramContext struct {

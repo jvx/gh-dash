@@ -2261,3 +2261,17 @@ func TestNotificationCommandTemplateVariables(t *testing.T) {
 		})
 	}
 }
+
+func TestClearCompletedTasks(t *testing.T) {
+	tasks := map[string]context.Task{
+		"running":  {Id: "running", State: context.TaskStart},
+		"finished": {Id: "finished", State: context.TaskFinished, PersistCompletion: true},
+		"failed":   {Id: "failed", State: context.TaskError, PersistCompletion: true},
+	}
+
+	clearCompletedTasks(tasks)
+
+	require.Equal(t, map[string]context.Task{
+		"running": {Id: "running", State: context.TaskStart},
+	}, tasks)
+}

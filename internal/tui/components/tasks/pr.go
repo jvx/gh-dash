@@ -42,21 +42,23 @@ func buildTaskId(prefix string, prNumber int) string {
 }
 
 type GitHubTask struct {
-	Id           string
-	Args         []string
-	Section      SectionIdentifier
-	StartText    string
-	FinishedText string
-	Msg          func(c *exec.Cmd, err error) tea.Msg
+	Id                string
+	Args              []string
+	Section           SectionIdentifier
+	StartText         string
+	FinishedText      string
+	PersistCompletion bool
+	Msg               func(c *exec.Cmd, err error) tea.Msg
 }
 
 func fireTask(ctx *context.ProgramContext, task GitHubTask) tea.Cmd {
 	start := context.Task{
-		Id:           task.Id,
-		StartText:    task.StartText,
-		FinishedText: task.FinishedText,
-		State:        context.TaskStart,
-		Error:        nil,
+		Id:                task.Id,
+		StartText:         task.StartText,
+		FinishedText:      task.FinishedText,
+		PersistCompletion: task.PersistCompletion,
+		State:             context.TaskStart,
+		Error:             nil,
 	}
 
 	startCmd := ctx.StartTask(start)
@@ -251,9 +253,10 @@ func updatePRTask(section SectionIdentifier, pr data.RowData) GitHubTask {
 			"-R",
 			pr.GetRepoNameWithOwner(),
 		},
-		Section:      section,
-		StartText:    fmt.Sprintf("Updating PR #%d", prNumber),
-		FinishedText: fmt.Sprintf("PR #%d has been updated", prNumber),
+		Section:           section,
+		StartText:         fmt.Sprintf("Updating PR #%d from its base branch", prNumber),
+		FinishedText:      fmt.Sprintf("PR #%d updated; checks are restarting", prNumber),
+		PersistCompletion: true,
 		Msg: func(c *exec.Cmd, err error) tea.Msg {
 			return UpdatePRMsg{
 				PrNumber: prNumber,

@@ -22,8 +22,9 @@ func TestUpdatePR_TaskConfiguration(t *testing.T) {
 	require.Equal(t, "pr_update_42", task.Id)
 	require.Equal(t, []string{"pr", "update-branch", "42", "-R", "owner/repo"}, task.Args)
 	require.Equal(t, section, task.Section)
-	require.Equal(t, "Updating PR #42", task.StartText)
-	require.Equal(t, "PR #42 has been updated", task.FinishedText)
+	require.Equal(t, "Updating PR #42 from its base branch", task.StartText)
+	require.Equal(t, "PR #42 updated; checks are restarting", task.FinishedText)
+	require.True(t, task.PersistCompletion)
 }
 
 func TestUpdatePR_MsgDoesNotMarkPRClosed(t *testing.T) {

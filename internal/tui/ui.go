@@ -100,6 +100,7 @@ func NewModel(location config.Location, repos Repositories) Model {
 		Version:    version,
 		StartTask: func(task context.Task) tea.Cmd {
 			log.Info("Starting task", "id", task.Id)
+			clearCompletedTasks(m.tasks)
 			task.StartTime = time.Now()
 			m.tasks[task.Id] = task
 			return m.taskSpinner.Tick
@@ -774,10 +775,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			now := time.Now()
 			task.FinishedTime = &now
 			m.tasks[msg.TaskId] = task
-			clear := tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-				return constants.ClearTaskMsg{TaskId: msg.TaskId}
-			})
-			cmds = append(cmds, clear)
+			if !task.PersistCompletion {
+				clear := tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+					return constants.ClearTaskMsg{TaskId: msg.TaskId}
+				})
+				cmds = append(cmds, clear)
+			}
 
 			scmd := m.updateSection(msg.SectionId, msg.SectionType, msg.Msg)
 			cmds = append(cmds, scmd)
@@ -868,8 +871,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case constants.ClearTaskMsg:
-		m.footer.SetRightSection("")
 		delete(m.tasks, msg.TaskId)
+		if len(m.tasks) == 0 {
+			m.footer.SetRightSection("")
+		} else {
+			m.footer.SetRightSection(m.renderRunningTask())
+		}
 
 	case section.SectionMsg:
 		cmd = m.updateRelevantSection(msg)
@@ -1916,6 +1923,14 @@ func (m *Model) renderRunningTask() string {
 		Height(1).
 		Background(m.ctx.Theme.SelectedBackground).
 		Render(strings.TrimSpace(lipgloss.JoinHorizontal(lipgloss.Top, stats, currTaskStatus)))
+}
+
+func clearCompletedTasks(tasks map[string]context.Task) {
+	for id, task := range tasks {
+		if task.State != context.TaskStart {
+			delete(tasks, id)
+		}
+	}
 }
 
 type userFetchedMsg struct {

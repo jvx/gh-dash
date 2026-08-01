@@ -25,7 +25,9 @@ const SectionType = "pr"
 
 type Model struct {
 	section.BaseModel
-	Prs []prrow.Data
+	Prs                     []prrow.Data
+	sessionMergedPRKeys     map[string]bool
+	sessionMergedExtraCount int
 }
 
 func NewModel(
@@ -50,6 +52,7 @@ func NewModel(
 		},
 	)
 	m.Prs = []prrow.Data{}
+	m.sessionMergedPRKeys = make(map[string]bool)
 
 	return m
 }
@@ -157,7 +160,8 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 
 	case tasks.UpdatePRMsg:
 		for i, currPr := range m.Prs {
-			if currPr.Primary.Number != msg.PrNumber {
+			if currPr.Primary.Number != msg.PrNumber ||
+				(msg.RepoNameWithOwner != "" && currPr.Primary.Repository.NameWithOwner != msg.RepoNameWithOwner) {
 				continue
 			}
 
@@ -189,6 +193,10 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			if msg.IsMerged != nil && *msg.IsMerged {
 				currPr.Primary.State = "MERGED"
 				currPr.Primary.Mergeable = ""
+				if m.sessionMergedPRKeys == nil {
+					m.sessionMergedPRKeys = make(map[string]bool)
+				}
+				m.sessionMergedPRKeys[prKey(currPr)] = true
 			}
 			m.Prs[i] = currPr
 			m.SetIsLoading(false)
@@ -199,11 +207,11 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 	case SectionPullRequestsFetchedMsg:
 		if m.LastFetchTaskId == msg.TaskId {
 			if m.PageInfo != nil {
-				m.Prs = append(m.Prs, msg.Prs...)
+				m.Prs = appendUniquePRs(m.Prs, msg.Prs)
 			} else {
-				m.Prs = msg.Prs
+				m.Prs, m.sessionMergedExtraCount = m.withSessionMergedPRs(msg.Prs)
 			}
-			m.TotalCount = msg.TotalCount
+			m.TotalCount = msg.TotalCount + m.sessionMergedExtraCount
 			m.PageInfo = &msg.PageInfo
 			m.SetIsLoading(false)
 			m.Table.SetRows(m.BuildRows())
@@ -521,7 +529,74 @@ func (m *Model) FetchNextPageSectionRows() []tea.Cmd {
 
 func (m *Model) ResetRows() {
 	m.Prs = nil
+	m.sessionMergedPRKeys = make(map[string]bool)
+	m.sessionMergedExtraCount = 0
 	m.BaseModel.ResetRows()
+}
+
+func prKey(pr prrow.Data) string {
+	if pr.Primary == nil {
+		return ""
+	}
+	if pr.Primary.Url != "" {
+		return pr.Primary.Url
+	}
+	return fmt.Sprintf("%s#%d", pr.Primary.Repository.NameWithOwner, pr.Primary.Number)
+}
+
+// withSessionMergedPRs keeps PRs merged through this section visible across
+// automatic refreshes. A manual refresh calls ResetRows first and clears the
+// session keys, so those PRs then leave open-only sections as expected.
+func (m *Model) withSessionMergedPRs(fetched []prrow.Data) ([]prrow.Data, int) {
+	mergedByKey := make(map[string]prrow.Data, len(m.sessionMergedPRKeys))
+	for _, pr := range m.Prs {
+		key := prKey(pr)
+		if m.sessionMergedPRKeys[key] {
+			mergedByKey[key] = pr
+		}
+	}
+
+	seen := make(map[string]bool, len(fetched))
+	result := make([]prrow.Data, 0, len(fetched)+len(mergedByKey))
+	for _, fetchedPR := range fetched {
+		key := prKey(fetchedPR)
+		if mergedPR, ok := mergedByKey[key]; ok {
+			// Keep the local MERGED state if GitHub search still returns a stale
+			// OPEN copy immediately after the merge.
+			result = append(result, mergedPR)
+		} else {
+			result = append(result, fetchedPR)
+		}
+		seen[key] = true
+	}
+
+	extraCount := 0
+	for _, pr := range m.Prs {
+		key := prKey(pr)
+		if key == "" || !m.sessionMergedPRKeys[key] || seen[key] {
+			continue
+		}
+		result = append(result, pr)
+		seen[key] = true
+		extraCount++
+	}
+	return result, extraCount
+}
+
+func appendUniquePRs(existing, fetched []prrow.Data) []prrow.Data {
+	seen := make(map[string]bool, len(existing)+len(fetched))
+	for _, pr := range existing {
+		seen[prKey(pr)] = true
+	}
+	for _, pr := range fetched {
+		key := prKey(pr)
+		if seen[key] {
+			continue
+		}
+		existing = append(existing, pr)
+		seen[key] = true
+	}
+	return existing
 }
 
 func FetchAllSections(
@@ -542,6 +617,10 @@ func FetchAllSections(
 			oldSection := prs[i+1].(*Model)
 			sectionModel.Prs = oldSection.Prs
 			sectionModel.LastFetchTaskId = oldSection.LastFetchTaskId
+			sectionModel.sessionMergedPRKeys = make(map[string]bool, len(oldSection.sessionMergedPRKeys))
+			for key, merged := range oldSection.sessionMergedPRKeys {
+				sectionModel.sessionMergedPRKeys[key] = merged
+			}
 		}
 		if sectionConfig.Layout.AuthorIcon.Hidden != nil {
 			sectionModel.ShowAuthorIcon = !*sectionConfig.Layout.AuthorIcon.Hidden

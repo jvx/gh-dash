@@ -130,3 +130,79 @@ func TestConfirmation_AllActions(t *testing.T) {
 		})
 	}
 }
+
+func TestWithSessionMergedPRsPreservesMergedRowsDuringAutomaticRefresh(t *testing.T) {
+	merged := prrow.Data{Primary: &data.PullRequestData{
+		Number: 42,
+		Url:    "https://github.com/acme/app/pull/42",
+		State:  "MERGED",
+	}}
+	newOpen := prrow.Data{Primary: &data.PullRequestData{
+		Number: 43,
+		Url:    "https://github.com/acme/app/pull/43",
+		State:  "OPEN",
+	}}
+	m := Model{
+		Prs:                 []prrow.Data{merged},
+		sessionMergedPRKeys: map[string]bool{prKey(merged): true},
+	}
+
+	got, extraCount := m.withSessionMergedPRs([]prrow.Data{newOpen})
+
+	require.Len(t, got, 2)
+	require.Equal(t, 43, got[0].Primary.Number)
+	require.Equal(t, 42, got[1].Primary.Number)
+	require.Equal(t, 1, extraCount)
+}
+
+func TestWithSessionMergedPRsKeepsMergedStateWhenFetchIsStale(t *testing.T) {
+	merged := prrow.Data{Primary: &data.PullRequestData{
+		Number: 42,
+		Url:    "https://github.com/acme/app/pull/42",
+		State:  "MERGED",
+	}}
+	staleOpen := prrow.Data{Primary: &data.PullRequestData{
+		Number: 42,
+		Url:    "https://github.com/acme/app/pull/42",
+		State:  "OPEN",
+	}}
+	m := Model{
+		Prs:                 []prrow.Data{merged},
+		sessionMergedPRKeys: map[string]bool{prKey(merged): true},
+	}
+
+	got, extraCount := m.withSessionMergedPRs([]prrow.Data{staleOpen})
+
+	require.Len(t, got, 1)
+	require.Equal(t, "MERGED", got[0].Primary.State)
+	require.Zero(t, extraCount, "a tracked PR already included in fetched total must not be double-counted")
+}
+
+func TestAppendUniquePRsDoesNotDuplicatePreservedMergedPR(t *testing.T) {
+	merged := prrow.Data{Primary: &data.PullRequestData{
+		Number: 42,
+		Url:    "https://github.com/acme/app/pull/42",
+		State:  "MERGED",
+	}}
+
+	got := appendUniquePRs([]prrow.Data{merged}, []prrow.Data{merged})
+
+	require.Len(t, got, 1)
+}
+
+func TestResetRowsClearsSessionMergedPRs(t *testing.T) {
+	merged := prrow.Data{Primary: &data.PullRequestData{
+		Number: 42,
+		Url:    "https://github.com/acme/app/pull/42",
+		State:  "MERGED",
+	}}
+	m := Model{
+		Prs:                 []prrow.Data{merged},
+		sessionMergedPRKeys: map[string]bool{prKey(merged): true},
+	}
+
+	m.ResetRows()
+
+	require.Empty(t, m.Prs)
+	require.Empty(t, m.sessionMergedPRKeys)
+}

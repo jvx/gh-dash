@@ -21,14 +21,15 @@ type SectionIdentifier struct {
 }
 
 type UpdatePRMsg struct {
-	PrNumber         int
-	IsClosed         *bool
-	NewComment       *data.Comment
-	ReadyForReview   *bool
-	IsMerged         *bool
-	AddedAssignees   *data.Assignees
-	RemovedAssignees *data.Assignees
-	Labels           *data.PRLabels
+	PrNumber          int
+	RepoNameWithOwner string
+	IsClosed          *bool
+	NewComment        *data.Comment
+	ReadyForReview    *bool
+	IsMerged          *bool
+	AddedAssignees    *data.Assignees
+	RemovedAssignees  *data.Assignees
+	Labels            *data.PRLabels
 }
 
 type UpdateBranchMsg struct {
@@ -196,8 +197,9 @@ func MergePR(ctx *context.ProgramContext, section SectionIdentifier, pr data.Row
 			TaskId:      taskId,
 			Err:         err,
 			Msg: UpdatePRMsg{
-				PrNumber: prNumber,
-				IsMerged: &isMerged,
+				PrNumber:          prNumber,
+				RepoNameWithOwner: pr.GetRepoNameWithOwner(),
+				IsMerged:          &isMerged,
 			},
 		}
 	}))

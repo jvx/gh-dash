@@ -571,16 +571,48 @@ func (m *Model) withSessionMergedPRs(fetched []prrow.Data) ([]prrow.Data, int) {
 	}
 
 	extraCount := 0
-	for _, pr := range m.Prs {
+	for oldIndex, pr := range m.Prs {
 		key := prKey(pr)
 		if key == "" || !m.sessionMergedPRKeys[key] || seen[key] {
 			continue
 		}
-		result = append(result, pr)
+
+		// Keep the merged row anchored between the same surrounding PRs it had
+		// before refresh. Newly fetched PRs retain GitHub's returned order.
+		insertAt := len(result)
+		for i := oldIndex + 1; i < len(m.Prs); i++ {
+			if nextIndex := prIndexByKey(result, prKey(m.Prs[i])); nextIndex >= 0 {
+				insertAt = nextIndex
+				break
+			}
+		}
+		if insertAt == len(result) {
+			for i := oldIndex - 1; i >= 0; i-- {
+				if previousIndex := prIndexByKey(result, prKey(m.Prs[i])); previousIndex >= 0 {
+					insertAt = previousIndex + 1
+					break
+				}
+			}
+		}
+		result = append(result, prrow.Data{})
+		copy(result[insertAt+1:], result[insertAt:])
+		result[insertAt] = pr
 		seen[key] = true
 		extraCount++
 	}
 	return result, extraCount
+}
+
+func prIndexByKey(prs []prrow.Data, key string) int {
+	if key == "" {
+		return -1
+	}
+	for i, pr := range prs {
+		if prKey(pr) == key {
+			return i
+		}
+	}
+	return -1
 }
 
 func appendUniquePRs(existing, fetched []prrow.Data) []prrow.Data {

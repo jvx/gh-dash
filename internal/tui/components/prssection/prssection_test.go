@@ -132,26 +132,38 @@ func TestConfirmation_AllActions(t *testing.T) {
 }
 
 func TestWithSessionMergedPRsPreservesMergedRowsDuringAutomaticRefresh(t *testing.T) {
+	olderOpen := prrow.Data{Primary: &data.PullRequestData{
+		Number: 41,
+		Url:    "https://github.com/acme/app/pull/41",
+		State:  "OPEN",
+	}}
 	merged := prrow.Data{Primary: &data.PullRequestData{
 		Number: 42,
 		Url:    "https://github.com/acme/app/pull/42",
 		State:  "MERGED",
 	}}
-	newOpen := prrow.Data{Primary: &data.PullRequestData{
+	newerOpen := prrow.Data{Primary: &data.PullRequestData{
 		Number: 43,
 		Url:    "https://github.com/acme/app/pull/43",
 		State:  "OPEN",
 	}}
+	newlyFetched := prrow.Data{Primary: &data.PullRequestData{
+		Number: 44,
+		Url:    "https://github.com/acme/app/pull/44",
+		State:  "OPEN",
+	}}
 	m := Model{
-		Prs:                 []prrow.Data{merged},
+		Prs:                 []prrow.Data{newerOpen, merged, olderOpen},
 		sessionMergedPRKeys: map[string]bool{prKey(merged): true},
 	}
 
-	got, extraCount := m.withSessionMergedPRs([]prrow.Data{newOpen})
+	got, extraCount := m.withSessionMergedPRs([]prrow.Data{newlyFetched, newerOpen, olderOpen})
 
-	require.Len(t, got, 2)
-	require.Equal(t, 43, got[0].Primary.Number)
-	require.Equal(t, 42, got[1].Primary.Number)
+	require.Len(t, got, 4)
+	require.Equal(t, 44, got[0].Primary.Number)
+	require.Equal(t, 43, got[1].Primary.Number)
+	require.Equal(t, 42, got[2].Primary.Number)
+	require.Equal(t, 41, got[3].Primary.Number)
 	require.Equal(t, 1, extraCount)
 }
 

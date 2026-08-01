@@ -388,6 +388,7 @@ func (pr *PullRequest) ToTableRow(isSelected bool) table.Row {
 	if !pr.Ctx.Config.Theme.Ui.Table.Compact {
 		return table.Row{
 			pr.renderState(),
+			pr.RenderMergeStateStatus(),
 			pr.renderExtendedTitle(isSelected),
 			pr.renderLabels(isSelected),
 			pr.renderAssignees(),
@@ -403,6 +404,7 @@ func (pr *PullRequest) ToTableRow(isSelected bool) table.Row {
 
 	return table.Row{
 		pr.renderState(),
+		pr.RenderMergeStateStatus(),
 		pr.renderRepoName(),
 		pr.renderTitle(),
 		pr.renderAuthor(),

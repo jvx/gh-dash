@@ -275,6 +275,16 @@ func GetSectionColumns(
 		dLayout.ReviewStatus,
 		sLayout.ReviewStatus,
 	)
+	mergeStateStatusLayout := config.MergeColumnConfigs(
+		dLayout.MergeStateStatus,
+		sLayout.MergeStateStatus,
+	)
+	if mergeStateStatusLayout.Width == nil {
+		mergeStateStatusLayout.Width = utils.IntPtr(13)
+	}
+	if mergeStateStatusLayout.Hidden == nil {
+		mergeStateStatusLayout.Hidden = utils.BoolPtr(true)
+	}
 	stateLayout := config.MergeColumnConfigs(dLayout.State, sLayout.State)
 	ciLayout := config.MergeColumnConfigs(dLayout.Ci, sLayout.Ci)
 	labelsLayout := config.MergeColumnConfigs(dLayout.Labels, sLayout.Labels)
@@ -286,6 +296,11 @@ func GetSectionColumns(
 				Title:  "",
 				Width:  utils.IntPtr(3),
 				Hidden: stateLayout.Hidden,
+			},
+			{
+				Title:  "Sync",
+				Width:  mergeStateStatusLayout.Width,
+				Hidden: mergeStateStatusLayout.Hidden,
 			},
 			{
 				Title:  "Title",
@@ -346,6 +361,11 @@ func GetSectionColumns(
 			Title:  "",
 			Width:  utils.IntPtr(3),
 			Hidden: stateLayout.Hidden,
+		},
+		{
+			Title:  "Sync",
+			Width:  mergeStateStatusLayout.Width,
+			Hidden: mergeStateStatusLayout.Hidden,
 		},
 		{
 			Title:  "",

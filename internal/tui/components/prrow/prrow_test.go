@@ -313,3 +313,34 @@ func TestRenderLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderMergeStateStatus(t *testing.T) {
+	tests := []struct {
+		state data.MergeStateStatus
+		want  string
+	}{
+		{state: "CLEAN", want: "Up-to-date"},
+		{state: "BLOCKED", want: "Blocked"},
+		{state: "BEHIND", want: "Behind"},
+		{state: "UNKNOWN", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.state), func(t *testing.T) {
+			pr := PullRequest{Data: &Data{Primary: &data.PullRequestData{
+				MergeStateStatus: tt.state,
+			}}}
+
+			got := pr.RenderMergeStateStatus()
+			if tt.want == "" {
+				if got != "" {
+					t.Fatalf("RenderMergeStateStatus() = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("RenderMergeStateStatus() = %q, want substring %q", got, tt.want)
+			}
+		})
+	}
+}

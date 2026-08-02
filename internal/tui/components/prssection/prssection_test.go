@@ -218,3 +218,24 @@ func TestResetRowsClearsSessionMergedPRs(t *testing.T) {
 	require.Empty(t, m.Prs)
 	require.Empty(t, m.sessionMergedPRKeys)
 }
+
+func TestSelectedPRIdentitySurvivesNewRowAtTop(t *testing.T) {
+	pr41 := prrow.Data{Primary: &data.PullRequestData{Number: 41, Url: "https://github.com/acme/app/pull/41"}}
+	pr42 := prrow.Data{Primary: &data.PullRequestData{Number: 42, Url: "https://github.com/acme/app/pull/42"}}
+	pr43 := prrow.Data{Primary: &data.PullRequestData{Number: 43, Url: "https://github.com/acme/app/pull/43"}}
+	pr44 := prrow.Data{Primary: &data.PullRequestData{Number: 44, Url: "https://github.com/acme/app/pull/44"}}
+
+	key := selectedPRKey([]prrow.Data{pr43, pr42, pr41}, 1)
+	index, found := findPRIndex([]prrow.Data{pr44, pr43, pr42, pr41}, key)
+
+	require.True(t, found)
+	require.Equal(t, 2, index, "selection should follow PR #42 instead of staying on row 1")
+}
+
+func TestFindPRIndexRejectsMissingSelection(t *testing.T) {
+	pr42 := prrow.Data{Primary: &data.PullRequestData{Number: 42, Url: "https://github.com/acme/app/pull/42"}}
+
+	_, found := findPRIndex([]prrow.Data{pr42}, "https://github.com/acme/app/pull/99")
+
+	require.False(t, found)
+}

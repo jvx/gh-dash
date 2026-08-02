@@ -87,6 +87,15 @@ func (m *Model) GetCurrItem() int {
 	return m.currId
 }
 
+func (m *Model) SetCurrItem(item int) int {
+	m.ResetCurrItem()
+	target := min(max(item, 0), max(m.NumCurrentItems-1, 0))
+	for m.currId < target {
+		m.NextItem()
+	}
+	return m.currId
+}
+
 func (m *Model) NextItem() int {
 	atBottomOfViewport := m.currId >= m.bottomBoundId
 	if atBottomOfViewport {

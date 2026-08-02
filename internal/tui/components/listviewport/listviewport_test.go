@@ -129,3 +129,21 @@ func TestNextItemAtLastItem(t *testing.T) {
 		t.Errorf("expected currId=9, got %d", m.GetCurrItem())
 	}
 }
+
+func TestSetCurrItemMovesSelectionAndViewport(t *testing.T) {
+	m := newTestModel(testModelOpts{numItems: 10, viewportHeight: 5, itemHeight: 1})
+
+	if got := m.SetCurrItem(7); got != 7 {
+		t.Fatalf("expected currId=7, got %d", got)
+	}
+	if m.topBoundId != 3 || m.bottomBoundId != 7 {
+		t.Fatalf("expected visible bounds 3..7, got %d..%d", m.topBoundId, m.bottomBoundId)
+	}
+
+	if got := m.SetCurrItem(99); got != 9 {
+		t.Fatalf("expected out-of-range selection to clamp to 9, got %d", got)
+	}
+	if got := m.SetCurrItem(-1); got != 0 {
+		t.Fatalf("expected negative selection to clamp to 0, got %d", got)
+	}
+}

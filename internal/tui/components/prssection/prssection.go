@@ -28,6 +28,7 @@ type Model struct {
 	Prs                     []prrow.Data
 	sessionMergedPRKeys     map[string]bool
 	sessionMergedExtraCount int
+	selectedPRKey           string
 }
 
 func NewModel(
@@ -215,6 +216,7 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			m.PageInfo = &msg.PageInfo
 			m.SetIsLoading(false)
 			m.Table.SetRows(m.BuildRows())
+			m.restoreSelectedPR()
 			m.Table.UpdateLastUpdated(time.Now())
 			m.UpdateTotalItemsCount(m.TotalCount)
 		}
@@ -669,6 +671,7 @@ func FetchAllSections(
 			oldSection := prs[i+1].(*Model)
 			sectionModel.Prs = oldSection.Prs
 			sectionModel.LastFetchTaskId = oldSection.LastFetchTaskId
+			sectionModel.selectedPRKey = selectedPRKey(oldSection.Prs, oldSection.CurrRow())
 			sectionModel.sessionMergedPRKeys = make(map[string]bool, len(oldSection.sessionMergedPRKeys))
 			for key, merged := range oldSection.sessionMergedPRKeys {
 				sectionModel.sessionMergedPRKeys[key] = merged
@@ -683,6 +686,31 @@ func FetchAllSections(
 			sectionModel.FetchNextPageSectionRows()...)
 	}
 	return sections, tea.Batch(fetchPRsCmds...)
+}
+
+func selectedPRKey(prs []prrow.Data, index int) string {
+	if index < 0 || index >= len(prs) {
+		return ""
+	}
+	return prKey(prs[index])
+}
+
+func (m *Model) restoreSelectedPR() {
+	if index, ok := findPRIndex(m.Prs, m.selectedPRKey); ok {
+		m.Table.SetCurrItem(index)
+	}
+}
+
+func findPRIndex(prs []prrow.Data, key string) (int, bool) {
+	if key == "" {
+		return 0, false
+	}
+	for i, pr := range prs {
+		if prKey(pr) == key {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 func addAssignees(assignees, addedAssignees []data.Assignee) []data.Assignee {

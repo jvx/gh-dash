@@ -556,9 +556,14 @@ func (m *Model) hasInProgressRuns() bool {
 	return false
 }
 
+func (m *Model) nextPollToken() int64 {
+	m.pollToken++
+	return m.pollToken
+}
+
 func (m *Model) cancelRunsPoll() {
 	m.pollScheduled = false
-	m.pollToken = time.Now().UnixNano()
+	m.nextPollToken()
 }
 
 func (m *Model) scheduleRunsPollIfNeeded() tea.Cmd {
@@ -566,8 +571,7 @@ func (m *Model) scheduleRunsPollIfNeeded() tea.Cmd {
 		return nil
 	}
 	m.pollScheduled = true
-	m.pollToken = time.Now().UnixNano()
-	token := m.pollToken
+	token := m.nextPollToken()
 	sectionID := m.Id
 	repositoryIdentity := m.Ctx.ActionsRepositoryIdentity()
 	return tea.Tick(runsPollInterval, func(time.Time) tea.Msg {

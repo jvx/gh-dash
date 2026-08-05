@@ -32,7 +32,10 @@ type Task struct {
 }
 
 type ProgramContext struct {
-	GHRepo               *repository.Repository
+	GHRepo *repository.Repository
+	// ActionsRepo is independent from the local/startup repository and is used
+	// only by the Actions view. A nil value falls back to GHRepo.
+	ActionsRepo          *repository.Repository
 	GitRepo              *gitm.Repository
 	RepoPath             string
 	RepoUrl              string
@@ -59,6 +62,33 @@ type ProgramContext struct {
 
 func (ctx *ProgramContext) HasGHRepo() bool {
 	return ctx.GHRepo != nil && *ctx.GHRepo != (repository.Repository{})
+}
+
+func (ctx *ProgramContext) ActionsRepository() *repository.Repository {
+	if ctx.ActionsRepo != nil && *ctx.ActionsRepo != (repository.Repository{}) {
+		return ctx.ActionsRepo
+	}
+	if ctx.HasGHRepo() {
+		return ctx.GHRepo
+	}
+	return nil
+}
+
+func (ctx *ProgramContext) HasActionsRepository() bool { return ctx.ActionsRepository() != nil }
+
+func (ctx *ProgramContext) SetActionsRepository(repo repository.Repository) {
+	ctx.ActionsRepo = &repo
+}
+
+func RepositoryIdentity(repo *repository.Repository) string {
+	if repo == nil {
+		return ""
+	}
+	return repo.Host + "/" + repo.Owner + "/" + repo.Name
+}
+
+func (ctx *ProgramContext) ActionsRepositoryIdentity() string {
+	return RepositoryIdentity(ctx.ActionsRepository())
 }
 
 func (ctx *ProgramContext) GetViewSectionsConfig() []config.SectionConfig {

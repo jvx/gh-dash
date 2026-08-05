@@ -73,7 +73,7 @@ func TestActionsSectionClearsLoadingAfterFetchFailure(t *testing.T) {
 	model.LastFetchTaskId = "latest"
 	model.SetIsLoading(true)
 
-	updated, _ := model.Update(RunsFetchFailedMsg{TaskID: "latest"})
+	updated, _ := model.Update(RunsFetchFailedMsg{TaskID: "latest", RepositoryIdentity: ctx.ActionsRepositoryIdentity()})
 	require.False(t, updated.(*Model).IsLoading)
 }
 
@@ -86,7 +86,7 @@ func TestWorkflowPickerSelectsAndFiltersByWorkflow(t *testing.T) {
 
 	model.lastWorkflowFetchTaskID = "workflows"
 	updated, _ := model.Update(WorkflowsFetchedMsg{
-		TaskID: "workflows",
+		TaskID: "workflows", RepositoryIdentity: ctx.ActionsRepositoryIdentity(),
 		Workflows: []data.Workflow{
 			{ID: 22, Name: "02 - Production deploy", State: "active"},
 			{ID: 11, Name: "01 - Staging deploy", State: "active"},
@@ -166,7 +166,7 @@ func TestWorkflowRefreshFallsBackToAllAndRefetchesRuns(t *testing.T) {
 	model.lastWorkflowFetchTaskID = "latest"
 	oldRunTaskID := model.LastFetchTaskId
 
-	updated, cmd := model.Update(WorkflowsFetchedMsg{TaskID: "latest", Workflows: []data.Workflow{{ID: 88, Name: "Current", State: "active"}}})
+	updated, cmd := model.Update(WorkflowsFetchedMsg{TaskID: "latest", RepositoryIdentity: ctx.ActionsRepositoryIdentity(), Workflows: []data.Workflow{{ID: 88, Name: "Current", State: "active"}}})
 	model = *updated.(*Model)
 	require.NotNil(t, cmd)
 	require.Equal(t, int64(0), model.SelectedWorkflowID())
@@ -181,9 +181,9 @@ func TestInProgressRunsPollUntilGitHubReportsCompletion(t *testing.T) {
 	model.LastFetchTaskId = "initial"
 
 	updated, cmd := model.Update(RunsFetchedMsg{
-		TaskID: "initial",
-		Page:   1,
-		Runs:   []data.ActionRun{{ID: 99, Status: "queued"}},
+		TaskID: "initial", RepositoryIdentity: ctx.ActionsRepositoryIdentity(),
+		Page: 1,
+		Runs: []data.ActionRun{{ID: 99, Status: "queued"}},
 	})
 	model = *updated.(*Model)
 	require.NotNil(t, cmd)
@@ -191,8 +191,8 @@ func TestInProgressRunsPollUntilGitHubReportsCompletion(t *testing.T) {
 	token := model.pollToken
 
 	updated, _ = model.Update(RunsPolledMsg{
-		SectionID: 3,
-		Token:     token,
+		SectionID: 3, RepositoryIdentity: ctx.ActionsRepositoryIdentity(),
+		Token: token,
 		Result: data.ActionRunsResponse{
 			Runs: []data.ActionRun{{ID: 99, Status: "completed", Conclusion: "success"}},
 		},
@@ -215,4 +215,189 @@ func TestChangingWorkflowInvalidatesPendingRunsPoll(t *testing.T) {
 	require.NotNil(t, model.SelectWorkflow())
 	require.NotEqual(t, oldToken, model.pollToken)
 	require.False(t, model.pollScheduled)
+}
+
+func TestActionsRepositoryDefaultsToStartupAndCommandsUseIndependentSelection(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	require.Equal(t, "github.com/acme/widgets", ctx.ActionsRepositoryIdentity())
+
+	ctx.SetActionsRepository(repository.Repository{Host: "ghe.example.com", Owner: "octo", Name: "selected"})
+	require.Equal(t, "github.com", ctx.GHRepo.Host)
+	require.Equal(t, "acme", ctx.GHRepo.Owner)
+	require.Equal(t,
+		[]string{"run", "watch", "42", "--repo", "ghe.example.com/octo/selected"},
+		watchArgs(ctx, 42),
+	)
+	require.Equal(t,
+		[]string{"workflow", "run", "42", "--repo", "ghe.example.com/octo/selected"},
+		dispatchArgs(ctx, 42),
+	)
+}
+
+func TestActionCommandsAreDisabledWithoutRepository(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	ctx.GHRepo = nil
+	require.Nil(t, watchArgs(ctx, 42))
+	require.Nil(t, rerunArgs(ctx, 42))
+	require.Nil(t, dispatchArgs(ctx, 42))
+
+	model := NewModel(0, ctx, time.Now())
+	model.Runs = []data.ActionRun{{ID: 42}}
+	model.Workflows = []data.Workflow{{ID: 7, State: "active"}}
+	model.workflowCursor = 1
+	model.selectedWorkflowID = 7
+	model.Table.SetRows(model.BuildRows())
+	require.Nil(t, model.Watch())
+	require.Nil(t, model.Rerun())
+	require.Nil(t, model.Dispatch())
+	require.Nil(t, model.pollRuns(1))
+}
+
+func TestRepositorySelectionResetsActionsStateAndRejectsStaleResults(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	model := NewModel(0, ctx, time.Now())
+	model.Runs = []data.ActionRun{{ID: 1, Status: "in_progress"}}
+	model.Workflows = []data.Workflow{{ID: 2, Name: "Old"}}
+	model.selectedWorkflowID = 2
+	model.workflowCursor = 1
+	model.workflowListFocused = false
+	model.page = 3
+	model.PageInfo = &data.PageInfo{HasNextPage: true, EndCursor: "4"}
+	model.Table.SetRows(model.BuildRows())
+	require.NotNil(t, model.scheduleRunsPollIfNeeded())
+
+	model.repositoryPickerOpen = true
+	model.repositoryRequestID = 1
+	updated, _ := model.Update(RepositoriesFetchedMsg{RequestID: 1, Repositories: []data.ActionRepository{
+		{Host: "github.com", Owner: "other", Name: "new", FullName: "other/new"},
+	}})
+	model = *updated.(*Model)
+	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = *updated.(*Model)
+	require.NotNil(t, cmd)
+	require.Equal(t, "github.com/other/new", ctx.ActionsRepositoryIdentity())
+	require.Empty(t, model.Runs)
+	require.Empty(t, model.Workflows)
+	require.Nil(t, model.PageInfo)
+	require.Equal(t, int64(0), model.SelectedWorkflowID())
+	require.Equal(t, 0, model.WorkflowCursor())
+	require.True(t, model.WorkflowsFocused())
+	require.False(t, model.pollScheduled)
+
+	model.LastFetchTaskId = "collision"
+	updated, _ = model.Update(RunsFetchedMsg{
+		TaskID: "collision", Page: 1, RepositoryIdentity: "github.com/acme/widgets",
+		Runs: []data.ActionRun{{ID: 999}},
+	})
+	require.Empty(t, updated.(*Model).Runs, "a response from the previous repository must be ignored")
+}
+
+func TestPollingCommandCapturesSelectedRepository(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	ctx.SetActionsRepository(repository.Repository{Host: "ghe.example.com", Owner: "other", Name: "selected"})
+	model := NewModel(7, ctx, time.Now())
+
+	original := fetchActionRuns
+	t.Cleanup(func() { fetchActionRuns = original })
+	var host, owner, name string
+	fetchActionRuns = func(gotHost, gotOwner, gotName string, _ int64, _, _ int) (data.ActionRunsResponse, error) {
+		host, owner, name = gotHost, gotOwner, gotName
+		return data.ActionRunsResponse{}, nil
+	}
+
+	msg := model.pollRuns(123)()
+	require.Equal(t, "ghe.example.com", host)
+	require.Equal(t, "other", owner)
+	require.Equal(t, "selected", name)
+	polled := msg.(RunsPolledMsg)
+	require.Equal(t, "ghe.example.com/other/selected", polled.RepositoryIdentity)
+}
+
+func TestRunsAndWorkflowsCaptureSelectedRepository(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	ctx.SetActionsRepository(repository.Repository{Host: "ghe.example.com", Owner: "other", Name: "selected"})
+	model := NewModel(7, ctx, time.Now())
+	model.workflowRefreshNeeded = false
+
+	originalRuns := fetchActionRuns
+	originalWorkflows := fetchActionWorkflows
+	t.Cleanup(func() {
+		fetchActionRuns = originalRuns
+		fetchActionWorkflows = originalWorkflows
+	})
+	var runScope, workflowScope string
+	fetchActionRuns = func(host, owner, name string, _ int64, _, _ int) (data.ActionRunsResponse, error) {
+		runScope = host + "/" + owner + "/" + name
+		return data.ActionRunsResponse{}, nil
+	}
+	fetchActionWorkflows = func(host, owner, name string) ([]data.Workflow, error) {
+		workflowScope = host + "/" + owner + "/" + name
+		return nil, nil
+	}
+
+	runCommands := model.FetchNextPageSectionRows()
+	require.Len(t, runCommands, 3)
+	require.NotNil(t, runCommands[1])
+	runCommands[1]()
+	workflowCommands := model.fetchWorkflowList()
+	require.Len(t, workflowCommands, 2)
+	require.NotNil(t, workflowCommands[1])
+	workflowCommands[1]()
+	require.Equal(t, "ghe.example.com/other/selected", runScope)
+	require.Equal(t, "ghe.example.com/other/selected", workflowScope)
+}
+
+func TestFetchWithoutStartupRepositoryOpensPicker(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	ctx.GHRepo = nil
+	model, cmd := Fetch(ctx)
+	require.True(t, model.RepositoryPickerOpen())
+	require.NotNil(t, cmd)
+	require.False(t, ctx.HasActionsRepository())
+}
+
+func TestRepositoryPickerFiltersNavigatesAndIsNarrowSafe(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	ctx.MainContentWidth = 8
+	ctx.MainContentHeight = 4
+	model := NewModel(0, ctx, time.Now())
+	model.repositoryPickerOpen = true
+	model.repositories = []data.ActionRepository{
+		{Host: "github.com", Owner: "acme", Name: "alpha", FullName: "acme/alpha"},
+		{Host: "github.com", Owner: "other", Name: "beta", FullName: "other/beta"},
+	}
+	model.filterRepositories()
+	updated, _ := model.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	model = *updated.(*Model)
+	require.Equal(t, 1, model.repositoryCursor)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	model = *updated.(*Model)
+	require.Equal(t, 0, model.repositoryCursor)
+	updated, _ = model.Update(tea.KeyPressMsg{Text: "beta", Code: 'b'})
+	model = *updated.(*Model)
+	require.Len(t, model.filteredRepositories, 1)
+	require.Equal(t, "beta", model.filteredRepositories[0].Name)
+	require.NotPanics(t, func() { _ = model.View() })
+
+	requestID := model.repositoryRequestID
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	model = *updated.(*Model)
+	require.False(t, model.RepositoryPickerOpen())
+	require.Greater(t, model.repositoryRequestID, requestID)
+}
+
+func TestRepositoryPickerRejectsStaleLoad(t *testing.T) {
+	ctx := actionsTestContext("github.com")
+	model := NewModel(0, ctx, time.Now())
+	model.repositoryPickerOpen = true
+	model.repositoriesLoading = true
+	model.repositoryRequestID = 2
+
+	updated, _ := model.Update(RepositoriesFetchedMsg{
+		RequestID:    1,
+		Repositories: []data.ActionRepository{{Host: "github.com", Owner: "stale", Name: "repo", FullName: "stale/repo"}},
+	})
+	model = *updated.(*Model)
+	require.True(t, model.repositoriesLoading)
+	require.Empty(t, model.repositories)
 }

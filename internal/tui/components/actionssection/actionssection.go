@@ -8,10 +8,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/cli/go-gh/v2/pkg/auth"
+	"github.com/cli/go-gh/v2/pkg/repository"
+	"github.com/sahilm/fuzzy"
 
 	"github.com/dlvhdr/gh-dash/v4/internal/config"
 	"github.com/dlvhdr/gh-dash/v4/internal/data"
@@ -30,6 +34,12 @@ const defaultWorkflowPaneWidth = 28
 
 const runsPollInterval = 5 * time.Second
 
+var (
+	fetchActionRuns          = data.FetchActionRuns
+	fetchActionWorkflows     = data.FetchWorkflows
+	fetchActionsRepositories = data.FetchActionRepositories
+)
+
 type Model struct {
 	section.BaseModel
 	Runs []data.ActionRun
@@ -45,43 +55,64 @@ type Model struct {
 	workflowRefreshNeeded   bool
 	pollScheduled           bool
 	pollToken               int64
+
+	repositoryPickerOpen  bool
+	repositoriesLoading   bool
+	repositoriesLoadError error
+	repositories          []data.ActionRepository
+	filteredRepositories  []data.ActionRepository
+	repositoryQuery       string
+	repositoryCursor      int
+	repositoryRequestID   int64
 }
 
 type RunsFetchedMsg struct {
-	Runs       []data.ActionRun
-	TotalCount int
-	HasNext    bool
-	Page       int
-	TaskID     string
+	Runs               []data.ActionRun
+	TotalCount         int
+	HasNext            bool
+	Page               int
+	TaskID             string
+	RepositoryIdentity string
 }
 
 type RunsFetchFailedMsg struct {
-	TaskID string
+	TaskID             string
+	RepositoryIdentity string
 }
 
 type WorkflowsFetchedMsg struct {
-	Workflows []data.Workflow
-	TaskID    string
+	Workflows          []data.Workflow
+	TaskID             string
+	RepositoryIdentity string
 }
 
 type WorkflowsFetchFailedMsg struct {
-	TaskID string
+	TaskID             string
+	RepositoryIdentity string
+}
+
+type RepositoriesFetchedMsg struct {
+	Repositories []data.ActionRepository
+	Err          error
+	RequestID    int64
 }
 
 // RunsPollTickMsg and RunsPolledMsg carry their section ID so the root model can
 // route polling updates even when the user has switched to another view.
 type RunsPollTickMsg struct {
-	SectionID int
-	Token     int64
+	SectionID          int
+	Token              int64
+	RepositoryIdentity string
 }
 
 func (m RunsPollTickMsg) ActionSectionID() int { return m.SectionID }
 
 type RunsPolledMsg struct {
-	SectionID int
-	Token     int64
-	Result    data.ActionRunsResponse
-	Err       error
+	SectionID          int
+	Token              int64
+	Result             data.ActionRunsResponse
+	Err                error
+	RepositoryIdentity string
 }
 
 func (m RunsPolledMsg) ActionSectionID() int { return m.SectionID }
@@ -118,6 +149,9 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.repositoryPickerOpen {
+			return m, m.updateRepositoryPicker(msg)
+		}
 		if m.IsPromptConfirmationFocused() {
 			switch msg.String() {
 			case "ctrl+c", "esc":
@@ -138,7 +172,7 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			}
 		}
 	case RunsFetchedMsg:
-		if msg.TaskID == m.LastFetchTaskId {
+		if msg.TaskID == m.LastFetchTaskId && m.matchesRepository(msg.RepositoryIdentity) {
 			if msg.Page > 1 {
 				m.Runs = append(m.Runs, msg.Runs...)
 			} else {
@@ -156,11 +190,11 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			}
 		}
 	case RunsFetchFailedMsg:
-		if msg.TaskID == m.LastFetchTaskId {
+		if msg.TaskID == m.LastFetchTaskId && m.matchesRepository(msg.RepositoryIdentity) {
 			m.SetIsLoading(false)
 		}
 	case WorkflowsFetchedMsg:
-		if msg.TaskID == m.lastWorkflowFetchTaskID {
+		if msg.TaskID == m.lastWorkflowFetchTaskID && m.matchesRepository(msg.RepositoryIdentity) {
 			m.Workflows = msg.Workflows
 			sort.SliceStable(m.Workflows, func(i, j int) bool {
 				return strings.ToLower(m.Workflows[i].Name) < strings.ToLower(m.Workflows[j].Name)
@@ -175,19 +209,19 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 			}
 		}
 	case WorkflowsFetchFailedMsg:
-		if msg.TaskID == m.lastWorkflowFetchTaskID {
+		if msg.TaskID == m.lastWorkflowFetchTaskID && m.matchesRepository(msg.RepositoryIdentity) {
 			m.workflowsLoading = false
 			m.workflowLoadFailed = true
 		}
 	case RunsPollTickMsg:
-		if msg.Token == m.pollToken && m.pollScheduled {
+		if msg.Token == m.pollToken && m.pollScheduled && m.matchesRepository(msg.RepositoryIdentity) {
 			m.pollScheduled = false
 			if m.hasInProgressRuns() {
 				cmd = m.pollRuns(msg.Token)
 			}
 		}
 	case RunsPolledMsg:
-		if msg.Token == m.pollToken {
+		if msg.Token == m.pollToken && m.matchesRepository(msg.RepositoryIdentity) {
 			m.pollScheduled = false
 			if msg.Err == nil {
 				m.Runs = msg.Result.Runs
@@ -199,6 +233,15 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 				m.UpdateTotalItemsCount(msg.Result.TotalCount)
 			}
 			cmd = m.scheduleRunsPollIfNeeded()
+		}
+	case RepositoriesFetchedMsg:
+		if m.repositoryPickerOpen && msg.RequestID == m.repositoryRequestID {
+			m.repositoriesLoading = false
+			m.repositoriesLoadError = msg.Err
+			if msg.Err == nil {
+				m.repositories = msg.Repositories
+				m.filterRepositories()
+			}
 		}
 	case processFinishedMsg:
 		m.ResetRows()
@@ -239,7 +282,7 @@ func (m *Model) CurrentRun() *data.ActionRun {
 }
 
 func (m *Model) FetchNextPageSectionRows() []tea.Cmd {
-	if m == nil || !m.Ctx.HasGHRepo() || (m.PageInfo != nil && !m.PageInfo.HasNextPage) {
+	if m == nil || !m.Ctx.HasActionsRepository() || (m.PageInfo != nil && !m.PageInfo.HasNextPage) {
 		return nil
 	}
 	page := 1
@@ -250,19 +293,21 @@ func (m *Model) FetchNextPageSectionRows() []tea.Cmd {
 	m.LastFetchTaskId = taskID
 	m.SetIsLoading(true)
 	workflowID := m.selectedWorkflowID
+	repo := *m.Ctx.ActionsRepository()
+	repositoryIdentity := context.RepositoryIdentity(&repo)
 	start := m.Ctx.StartTask(context.Task{Id: taskID, StartText: "Fetching workflow runs", FinishedText: "Workflow runs fetched", State: context.TaskStart})
 	fetch := func() tea.Msg {
 		limit := m.Ctx.Config.Defaults.ActionsLimit
 		if limit <= 0 {
 			limit = 25
 		}
-		repo := m.Ctx.GHRepo
-		result, err := data.FetchActionRuns(repo.Host, repo.Owner, repo.Name, workflowID, limit, page)
+		result, err := fetchActionRuns(repo.Host, repo.Owner, repo.Name, workflowID, limit, page)
 		if err != nil {
-			return constants.TaskFinishedMsg{SectionId: m.Id, SectionType: m.Type, TaskId: taskID, Msg: RunsFetchFailedMsg{TaskID: taskID}, Err: err}
+			return constants.TaskFinishedMsg{SectionId: m.Id, SectionType: m.Type, TaskId: taskID, Msg: RunsFetchFailedMsg{TaskID: taskID, RepositoryIdentity: repositoryIdentity}, Err: err}
 		}
 		return constants.TaskFinishedMsg{SectionId: m.Id, SectionType: m.Type, TaskId: taskID, Msg: RunsFetchedMsg{
 			Runs: result.Runs, TotalCount: result.TotalCount, HasNext: result.HasNextPage, Page: page, TaskID: taskID,
+			RepositoryIdentity: repositoryIdentity,
 		}}
 	}
 	cmds := []tea.Cmd{start, fetch, m.Table.StartLoadingSpinner()}
@@ -274,34 +319,221 @@ func (m *Model) FetchNextPageSectionRows() []tea.Cmd {
 }
 
 func (m *Model) fetchWorkflowList() []tea.Cmd {
-	if m == nil || !m.Ctx.HasGHRepo() {
+	if m == nil || !m.Ctx.HasActionsRepository() {
 		return nil
 	}
 	taskID := fmt.Sprintf("fetching_workflows_%d_%d", m.Id, time.Now().UnixNano())
 	m.lastWorkflowFetchTaskID = taskID
 	m.workflowsLoading = true
 	m.workflowLoadFailed = false
+	repo := *m.Ctx.ActionsRepository()
+	repositoryIdentity := context.RepositoryIdentity(&repo)
 	start := m.Ctx.StartTask(context.Task{Id: taskID, StartText: "Fetching workflows", FinishedText: "Workflows fetched", State: context.TaskStart})
 	fetch := func() tea.Msg {
-		repo := m.Ctx.GHRepo
-		workflows, err := data.FetchWorkflows(repo.Host, repo.Owner, repo.Name)
+		workflows, err := fetchActionWorkflows(repo.Host, repo.Owner, repo.Name)
 		if err != nil {
-			return constants.TaskFinishedMsg{SectionId: m.Id, SectionType: m.Type, TaskId: taskID, Msg: WorkflowsFetchFailedMsg{TaskID: taskID}, Err: err}
+			return constants.TaskFinishedMsg{SectionId: m.Id, SectionType: m.Type, TaskId: taskID, Msg: WorkflowsFetchFailedMsg{TaskID: taskID, RepositoryIdentity: repositoryIdentity}, Err: err}
 		}
-		return constants.TaskFinishedMsg{SectionId: m.Id, SectionType: m.Type, TaskId: taskID, Msg: WorkflowsFetchedMsg{Workflows: workflows, TaskID: taskID}}
+		return constants.TaskFinishedMsg{SectionId: m.Id, SectionType: m.Type, TaskId: taskID, Msg: WorkflowsFetchedMsg{Workflows: workflows, TaskID: taskID, RepositoryIdentity: repositoryIdentity}}
 	}
 	return []tea.Cmd{start, fetch}
 }
 
 func Fetch(ctx *context.ProgramContext) (Model, tea.Cmd) {
 	m := NewModel(0, ctx, time.Now())
-	if !ctx.HasGHRepo() {
-		m.Table.SetRows([]table.Row{})
-		return m, func() tea.Msg {
-			return constants.ErrMsg{Err: errors.New("Actions view requires a repository; start gh-dash in a repository or set GH_REPO")}
-		}
+	if !ctx.HasActionsRepository() {
+		return m, m.OpenRepositoryPicker()
 	}
 	return m, tea.Batch(m.FetchNextPageSectionRows()...)
+}
+
+func (m *Model) matchesRepository(identity string) bool {
+	return identity == m.Ctx.ActionsRepositoryIdentity()
+}
+
+func (m *Model) RepositoryPickerOpen() bool { return m.repositoryPickerOpen }
+
+func (m *Model) repositoryPickerHosts() []string {
+	hosts := make([]string, 0)
+	seen := make(map[string]struct{})
+	add := func(host string) {
+		host = auth.NormalizeHostname(host)
+		if host == "" {
+			return
+		}
+		identity := strings.ToLower(host)
+		if _, ok := seen[identity]; ok {
+			return
+		}
+		seen[identity] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	if repo := m.Ctx.ActionsRepository(); repo != nil {
+		add(repo.Host)
+	}
+	for _, host := range auth.KnownHosts() {
+		add(host)
+	}
+	defaultHost, _ := auth.DefaultHost()
+	add(defaultHost)
+	if len(hosts) == 0 {
+		add("github.com")
+	}
+	return hosts
+}
+
+func (m *Model) OpenRepositoryPicker() tea.Cmd {
+	m.repositoryPickerOpen = true
+	m.repositoriesLoading = true
+	m.repositoriesLoadError = nil
+	m.repositoryQuery = ""
+	m.repositoryCursor = 0
+	m.repositories = nil
+	m.filteredRepositories = nil
+	m.repositoryRequestID++
+	requestID := m.repositoryRequestID
+	hosts := m.repositoryPickerHosts()
+	return func() tea.Msg {
+		var repositories []data.ActionRepository
+		var lastErr error
+		succeeded := false
+		for _, host := range hosts {
+			hostRepositories, err := fetchActionsRepositories(host)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			succeeded = true
+			repositories = append(repositories, hostRepositories...)
+		}
+		if succeeded {
+			lastErr = nil
+			sort.SliceStable(repositories, func(i, j int) bool {
+				return repositories[i].PushedAt.After(repositories[j].PushedAt)
+			})
+		}
+		return RepositoriesFetchedMsg{Repositories: repositories, Err: lastErr, RequestID: requestID}
+	}
+}
+
+func (m *Model) filterRepositories() {
+	m.filteredRepositories = append(m.filteredRepositories[:0], m.repositories...)
+	query := strings.TrimSpace(m.repositoryQuery)
+	if query != "" {
+		searchable := make([]string, len(m.repositories))
+		for i, repo := range m.repositories {
+			searchable[i] = repo.Host + "/" + repo.FullName
+		}
+		matches := fuzzy.Find(query, searchable)
+		m.filteredRepositories = m.filteredRepositories[:0]
+		for _, match := range matches {
+			m.filteredRepositories = append(m.filteredRepositories, m.repositories[match.Index])
+		}
+	}
+	m.repositoryCursor = max(0, min(m.repositoryCursor, len(m.filteredRepositories)-1))
+}
+
+func (m *Model) updateRepositoryPicker(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.repositoryPickerOpen = false
+		m.repositoryRequestID++
+		return nil
+	case "up", "ctrl+p":
+		if len(m.filteredRepositories) > 0 {
+			m.repositoryCursor = (m.repositoryCursor - 1 + len(m.filteredRepositories)) % len(m.filteredRepositories)
+		}
+		return nil
+	case "down", "ctrl+n":
+		if len(m.filteredRepositories) > 0 {
+			m.repositoryCursor = (m.repositoryCursor + 1) % len(m.filteredRepositories)
+		}
+		return nil
+	case "enter":
+		if m.repositoryCursor < 0 || m.repositoryCursor >= len(m.filteredRepositories) {
+			return nil
+		}
+		selected := m.filteredRepositories[m.repositoryCursor]
+		oldIdentity := m.Ctx.ActionsRepositoryIdentity()
+		m.Ctx.SetActionsRepository(repository.Repository{Host: selected.Host, Owner: selected.Owner, Name: selected.Name})
+		m.repositoryPickerOpen = false
+		if oldIdentity == m.Ctx.ActionsRepositoryIdentity() {
+			return nil
+		}
+		m.resetForRepositoryChange()
+		return tea.Batch(m.FetchNextPageSectionRows()...)
+	case "backspace":
+		if m.repositoryQuery != "" {
+			_, size := utf8.DecodeLastRuneInString(m.repositoryQuery)
+			m.repositoryQuery = m.repositoryQuery[:len(m.repositoryQuery)-size]
+			m.repositoryCursor = 0
+			m.filterRepositories()
+		}
+		return nil
+	}
+	text := msg.Key().Text
+	if text != "" && utf8.RuneCountInString(text) > 0 {
+		m.repositoryQuery += text
+		m.repositoryCursor = 0
+		m.filterRepositories()
+	}
+	return nil
+}
+
+func (m *Model) resetForRepositoryChange() {
+	m.cancelRunsPoll()
+	m.LastFetchTaskId = ""
+	m.lastWorkflowFetchTaskID = ""
+	m.Runs = nil
+	m.Workflows = nil
+	m.page = 0
+	m.TotalCount = 0
+	m.PageInfo = nil
+	m.selectedWorkflowID = 0
+	m.workflowCursor = 0
+	m.workflowListFocused = true
+	m.workflowsLoading = false
+	m.workflowLoadFailed = false
+	m.workflowRefreshNeeded = true
+	m.Table.SetRows(nil)
+	m.Table.ResetCurrItem()
+	m.SetIsLoading(false)
+	m.UpdateTotalItemsCount(0)
+}
+
+func (m *Model) renderRepositoryPicker() string {
+	width := max(1, min(72, m.Ctx.MainContentWidth-2))
+	height := max(1, m.Ctx.MainContentHeight-3)
+	var lines []string
+	lines = append(lines, m.Ctx.Styles.Table.HeaderStyle.Bold(true).Render("Choose Actions repository"))
+	lines = append(lines, ansi.Truncate("Search: "+m.repositoryQuery+"█", width, constants.Ellipsis))
+	lines = append(lines, m.Ctx.Styles.Common.FaintTextStyle.Render("↑/↓ or ctrl+p/n • enter select • esc cancel"))
+	if m.repositoriesLoading {
+		lines = append(lines, "Loading repositories...")
+	} else if m.repositoriesLoadError != nil {
+		lines = append(lines, "Unable to load repositories: "+m.repositoriesLoadError.Error())
+	} else if len(m.filteredRepositories) == 0 {
+		lines = append(lines, "No repositories found")
+	} else {
+		visible := max(1, height-len(lines))
+		start := max(0, m.repositoryCursor-visible+1)
+		end := min(len(m.filteredRepositories), start+visible)
+		for i := start; i < end; i++ {
+			repo := m.filteredRepositories[i]
+			label := repo.FullName
+			if repo.Host != "github.com" {
+				label = repo.Host + "/" + label
+			}
+			prefix := "  "
+			style := lipgloss.NewStyle()
+			if i == m.repositoryCursor {
+				prefix = "> "
+				style = style.Background(m.Ctx.Theme.SelectedBackground).Bold(true)
+			}
+			lines = append(lines, style.Width(width).MaxWidth(width).Render(prefix+ansi.Truncate(label, max(1, width-2), constants.Ellipsis)))
+		}
+	}
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Height(height).MaxHeight(height).Render(strings.Join(lines, "\n"))
 }
 
 func (m *Model) resetRuns() {
@@ -324,9 +556,14 @@ func (m *Model) hasInProgressRuns() bool {
 	return false
 }
 
+func (m *Model) nextPollToken() int64 {
+	m.pollToken++
+	return m.pollToken
+}
+
 func (m *Model) cancelRunsPoll() {
 	m.pollScheduled = false
-	m.pollToken = time.Now().UnixNano()
+	m.nextPollToken()
 }
 
 func (m *Model) scheduleRunsPollIfNeeded() tea.Cmd {
@@ -334,25 +571,29 @@ func (m *Model) scheduleRunsPollIfNeeded() tea.Cmd {
 		return nil
 	}
 	m.pollScheduled = true
-	m.pollToken = time.Now().UnixNano()
-	token := m.pollToken
+	token := m.nextPollToken()
 	sectionID := m.Id
+	repositoryIdentity := m.Ctx.ActionsRepositoryIdentity()
 	return tea.Tick(runsPollInterval, func(time.Time) tea.Msg {
-		return RunsPollTickMsg{SectionID: sectionID, Token: token}
+		return RunsPollTickMsg{SectionID: sectionID, Token: token, RepositoryIdentity: repositoryIdentity}
 	})
 }
 
 func (m *Model) pollRuns(token int64) tea.Cmd {
+	if m == nil || !m.Ctx.HasActionsRepository() {
+		return nil
+	}
 	workflowID := m.selectedWorkflowID
 	sectionID := m.Id
 	limit := m.Ctx.Config.Defaults.ActionsLimit
 	if limit <= 0 {
 		limit = 25
 	}
-	repo := m.Ctx.GHRepo
+	repo := *m.Ctx.ActionsRepository()
+	repositoryIdentity := context.RepositoryIdentity(&repo)
 	return func() tea.Msg {
-		result, err := data.FetchActionRuns(repo.Host, repo.Owner, repo.Name, workflowID, limit, 1)
-		return RunsPolledMsg{SectionID: sectionID, Token: token, Result: result, Err: err}
+		result, err := fetchActionRuns(repo.Host, repo.Owner, repo.Name, workflowID, limit, 1)
+		return RunsPolledMsg{SectionID: sectionID, Token: token, Result: result, Err: err, RepositoryIdentity: repositoryIdentity}
 	}
 }
 
@@ -391,7 +632,7 @@ func (m *Model) syncTableDimensions() {
 	paneWidth := m.workflowPaneWidth()
 	m.Table.SetDimensions(constants.Dimensions{
 		Width:  max(0, dimensions.Width-paneWidth-1),
-		Height: max(0, dimensions.Height-2),
+		Height: max(0, dimensions.Height-3),
 	})
 	m.Table.SyncViewPortContent()
 }
@@ -402,14 +643,27 @@ func (m *Model) UpdateProgramContext(ctx *context.ProgramContext) {
 }
 
 func (m *Model) View() string {
+	if m.repositoryPickerOpen {
+		return m.Ctx.Styles.Section.ContainerStyle.Width(max(1, m.Ctx.MainContentWidth)).Render(m.renderRepositoryPicker())
+	}
 	tableView := m.Table.View()
 	paneWidth := m.workflowPaneWidth()
+	var content string
 	if paneWidth == 0 {
-		return m.Ctx.Styles.Section.ContainerStyle.Width(m.Ctx.MainContentWidth).Render(tableView)
+		content = tableView
+	} else {
+		pane := m.renderWorkflowPane(paneWidth, lipgloss.Height(tableView))
+		content = lipgloss.JoinHorizontal(lipgloss.Top, pane, tableView)
 	}
-	pane := m.renderWorkflowPane(paneWidth, lipgloss.Height(tableView))
-	content := lipgloss.JoinHorizontal(lipgloss.Top, pane, tableView)
-	return m.Ctx.Styles.Section.ContainerStyle.Width(m.Ctx.MainContentWidth).Render(content)
+	repositoryLabel := "No Actions repository selected — press c to choose"
+	if repo := m.Ctx.ActionsRepository(); repo != nil {
+		repositoryLabel = "Actions repository: " + repo.Owner + "/" + repo.Name
+		if repo.Host != "" && repo.Host != "github.com" {
+			repositoryLabel = "Actions repository: " + repo.Host + "/" + repo.Owner + "/" + repo.Name
+		}
+	}
+	header := m.Ctx.Styles.Common.FaintTextStyle.Render(ansi.Truncate(repositoryLabel, max(1, m.Ctx.MainContentWidth), constants.Ellipsis))
+	return m.Ctx.Styles.Section.ContainerStyle.Width(m.Ctx.MainContentWidth).Render(lipgloss.JoinVertical(lipgloss.Left, header, content))
 }
 
 func (m *Model) renderWorkflowPane(width, height int) string {
@@ -569,7 +823,10 @@ func (m *Model) GetPromptConfirmation() string {
 }
 
 func repoArg(ctx *context.ProgramContext) string {
-	repo := ctx.GHRepo
+	repo := ctx.ActionsRepository()
+	if repo == nil {
+		return ""
+	}
 	if repo.Host != "" && repo.Host != "github.com" {
 		return fmt.Sprintf("%s/%s/%s", repo.Host, repo.Owner, repo.Name)
 	}
@@ -578,7 +835,7 @@ func repoArg(ctx *context.ProgramContext) string {
 
 func (m *Model) Watch() tea.Cmd {
 	run := m.CurrentRun()
-	if run == nil {
+	if run == nil || !m.Ctx.HasActionsRepository() {
 		return nil
 	}
 	return execCommand(watchArgs(m.Ctx, run.ID))
@@ -586,7 +843,7 @@ func (m *Model) Watch() tea.Cmd {
 
 func (m *Model) Dispatch() tea.Cmd {
 	workflow := m.SelectedWorkflow()
-	if workflow == nil || workflow.State != "active" {
+	if workflow == nil || workflow.State != "active" || !m.Ctx.HasActionsRepository() {
 		return nil
 	}
 	return execCommand(dispatchArgs(m.Ctx, workflow.ID))
@@ -594,21 +851,30 @@ func (m *Model) Dispatch() tea.Cmd {
 
 func (m *Model) Rerun() tea.Cmd {
 	run := m.CurrentRun()
-	if run == nil {
+	if run == nil || !m.Ctx.HasActionsRepository() {
 		return nil
 	}
 	return execCommand(rerunArgs(m.Ctx, run.ID))
 }
 
 func watchArgs(ctx *context.ProgramContext, runID int64) []string {
+	if !ctx.HasActionsRepository() {
+		return nil
+	}
 	return []string{"run", "watch", strconv.FormatInt(runID, 10), "--repo", repoArg(ctx)}
 }
 
 func dispatchArgs(ctx *context.ProgramContext, workflowID int64) []string {
+	if !ctx.HasActionsRepository() {
+		return nil
+	}
 	return []string{"workflow", "run", strconv.FormatInt(workflowID, 10), "--repo", repoArg(ctx)}
 }
 
 func rerunArgs(ctx *context.ProgramContext, runID int64) []string {
+	if !ctx.HasActionsRepository() {
+		return nil
+	}
 	return []string{"run", "rerun", strconv.FormatInt(runID, 10), "--repo", repoArg(ctx)}
 }
 

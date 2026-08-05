@@ -14,18 +14,22 @@ import (
 )
 
 type JobsFetchedMsg struct {
-	RunID int64
-	Jobs  []data.WorkflowJob
-	Err   error
+	RunID              int64
+	Jobs               []data.WorkflowJob
+	Err                error
+	RepositoryIdentity string
 }
 
+var fetchWorkflowJobs = data.FetchWorkflowJobs
+
 type Model struct {
-	ctx     *context.ProgramContext
-	run     *data.ActionRun
-	jobs    []data.WorkflowJob
-	loading bool
-	err     error
-	width   int
+	ctx                *context.ProgramContext
+	run                *data.ActionRun
+	jobs               []data.WorkflowJob
+	loading            bool
+	err                error
+	width              int
+	repositoryIdentity string
 }
 
 func NewModel(ctx *context.ProgramContext) Model { return Model{ctx: ctx} }
@@ -35,10 +39,11 @@ func (m *Model) SetWidth(width int)                               { m.width = wi
 
 func (m *Model) SetRun(run *data.ActionRun) tea.Cmd {
 	if run == nil {
-		m.run, m.jobs, m.err = nil, nil, nil
+		m.Reset()
 		return nil
 	}
-	if m.run != nil && m.run.ID == run.ID {
+	repositoryIdentity := m.ctx.ActionsRepositoryIdentity()
+	if m.run != nil && m.run.ID == run.ID && m.repositoryIdentity == repositoryIdentity {
 		return nil
 	}
 	copy := *run
@@ -46,23 +51,35 @@ func (m *Model) SetRun(run *data.ActionRun) tea.Cmd {
 	m.jobs = nil
 	m.err = nil
 	m.loading = true
-	repo := m.ctx.GHRepo
+	m.repositoryIdentity = repositoryIdentity
+	repo := m.ctx.ActionsRepository()
 	if repo == nil {
+		m.loading = false
 		return nil
 	}
+	repoCopy := *repo
 	return func() tea.Msg {
-		jobs, err := data.FetchWorkflowJobs(repo.Host, repo.Owner, repo.Name, run.ID)
-		return JobsFetchedMsg{RunID: run.ID, Jobs: jobs, Err: err}
+		jobs, err := fetchWorkflowJobs(repoCopy.Host, repoCopy.Owner, repoCopy.Name, run.ID)
+		return JobsFetchedMsg{RunID: run.ID, Jobs: jobs, Err: err, RepositoryIdentity: repositoryIdentity}
 	}
 }
 
 func (m *Model) SetJobs(msg JobsFetchedMsg) {
-	if m.run == nil || m.run.ID != msg.RunID {
+	if m.run == nil || m.run.ID != msg.RunID || msg.RepositoryIdentity != m.repositoryIdentity ||
+		msg.RepositoryIdentity != m.ctx.ActionsRepositoryIdentity() {
 		return
 	}
 	m.loading = false
 	m.jobs = msg.Jobs
 	m.err = msg.Err
+}
+
+func (m *Model) Reset() {
+	m.run = nil
+	m.jobs = nil
+	m.loading = false
+	m.err = nil
+	m.repositoryIdentity = ""
 }
 
 func (m Model) View() string {

@@ -2,10 +2,30 @@ package data
 
 import (
 	"fmt"
+	"net/url"
+	"sort"
+	"strings"
 	"time"
 
 	gh "github.com/cli/go-gh/v2/pkg/api"
 )
+
+type ActionRepository struct {
+	Host     string
+	Owner    string
+	Name     string
+	FullName string
+	PushedAt time.Time
+}
+
+type actionRepositoryAPI struct {
+	Name     string    `json:"name"`
+	FullName string    `json:"full_name"`
+	PushedAt time.Time `json:"pushed_at"`
+	Owner    struct {
+		Login string `json:"login"`
+	} `json:"owner"`
+}
 
 // ActionRun is a repository-scoped GitHub Actions workflow run.
 type ActionRun struct {
@@ -157,4 +177,50 @@ func FetchWorkflowJobs(host, owner, repo string, runID int64) ([]WorkflowJob, er
 		return nil, err
 	}
 	return fetchWorkflowJobs(client, owner, repo, runID)
+}
+
+func fetchActionRepositories(client *gh.RESTClient, host string) ([]ActionRepository, error) {
+	repositories := make([]ActionRepository, 0)
+	seen := make(map[string]struct{})
+	for page := 1; ; page++ {
+		var response []actionRepositoryAPI
+		path := fmt.Sprintf("user/repos?affiliation=%s&sort=pushed&direction=desc&per_page=100&page=%d",
+			url.QueryEscape("owner,collaborator,organization_member"), page)
+		if err := client.Get(path, &response); err != nil {
+			return nil, err
+		}
+		for _, repo := range response {
+			owner := repo.Owner.Login
+			if owner == "" && strings.Contains(repo.FullName, "/") {
+				owner = strings.SplitN(repo.FullName, "/", 2)[0]
+			}
+			identity := strings.ToLower(host + "/" + owner + "/" + repo.Name)
+			if _, exists := seen[identity]; exists {
+				continue
+			}
+			seen[identity] = struct{}{}
+			fullName := repo.FullName
+			if fullName == "" {
+				fullName = owner + "/" + repo.Name
+			}
+			repositories = append(repositories, ActionRepository{
+				Host: host, Owner: owner, Name: repo.Name, FullName: fullName, PushedAt: repo.PushedAt,
+			})
+		}
+		if len(response) < 100 {
+			break
+		}
+	}
+	sort.SliceStable(repositories, func(i, j int) bool {
+		return repositories[i].PushedAt.After(repositories[j].PushedAt)
+	})
+	return repositories, nil
+}
+
+func FetchActionRepositories(host string) ([]ActionRepository, error) {
+	client, err := actionsRESTClient(host)
+	if err != nil {
+		return nil, err
+	}
+	return fetchActionRepositories(client, host)
 }

@@ -29,11 +29,9 @@ const SectionType = "repo"
 
 type Model struct {
 	section.BaseModel
-	repo           *git.Repo
-	Branches       []branch.Branch
-	Prs            []data.PullRequestData
-	isRefreshSetUp bool
-	refreshId      int
+	repo     *git.Repo
+	Branches []branch.Branch
+	Prs      []data.PullRequestData
 }
 
 func NewModel(
@@ -60,7 +58,6 @@ func NewModel(
 	m.repo = &git.Repo{Branches: []git.Branch{}}
 	m.Branches = []branch.Branch{}
 	m.Prs = []data.PullRequestData{}
-	m.isRefreshSetUp = false
 
 	return m
 }
@@ -180,15 +177,6 @@ func (m *Model) Update(msg tea.Msg) (section.Section, tea.Cmd) {
 	case SectionPullRequestsFetchedMsg:
 		m.Prs = msg.Prs
 
-	case RefreshBranchesMsg:
-		if msg.id == m.refreshId {
-			cmds = append(cmds, m.onRefreshBranchesMsg()...)
-		}
-
-	case RefreshPrsMsg:
-		if msg.id == m.refreshId {
-			cmds = append(cmds, m.onRefreshPrsMsg()...)
-		}
 	}
 
 	m.updateBranchesWithPrs()
@@ -491,18 +479,10 @@ func FetchAllBranches(ctx *context.ProgramContext) (Model, tea.Cmd) {
 		cfg,
 		time.Now(),
 	)
-	m.refreshId = nextID()
-
 	if ctx.RepoPath != "" {
 		cmds = append(cmds, m.readRepoCmd()...)
 		cmds = append(cmds, m.fetchRepoCmd()...)
 		cmds = append(cmds, m.fetchPRsCmd())
-	}
-
-	if !m.isRefreshSetUp {
-		m.isRefreshSetUp = true
-		cmds = append(cmds, m.tickRefreshBranchesCmd())
-		cmds = append(cmds, m.tickFetchPrsCmd())
 	}
 
 	return m, tea.Batch(cmds...)

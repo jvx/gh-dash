@@ -217,6 +217,18 @@ func TestResetRowsClearsSessionMergedPRs(t *testing.T) {
 
 	require.Empty(t, m.Prs)
 	require.Empty(t, m.sessionMergedPRKeys)
+	require.Equal(t, prKey(merged), m.selectedPRKey)
+}
+
+func TestRememberSelectedPRUsesStableIdentity(t *testing.T) {
+	pr41 := prrow.Data{Primary: &data.PullRequestData{Number: 41, Url: "https://github.com/acme/app/pull/41"}}
+	pr42 := prrow.Data{Primary: &data.PullRequestData{Number: 42, Url: "https://github.com/acme/app/pull/42"}}
+	pr43 := prrow.Data{Primary: &data.PullRequestData{Number: 43, Url: "https://github.com/acme/app/pull/43"}}
+	m := Model{Prs: []prrow.Data{pr43, pr42, pr41}}
+
+	m.rememberSelectedPR(1)
+
+	require.Equal(t, prKey(pr42), m.selectedPRKey)
 }
 
 func TestSelectedPRIdentitySurvivesNewRowAtTop(t *testing.T) {
@@ -238,4 +250,16 @@ func TestFindPRIndexRejectsMissingSelection(t *testing.T) {
 	_, found := findPRIndex([]prrow.Data{pr42}, "https://github.com/acme/app/pull/99")
 
 	require.False(t, found)
+}
+
+func TestRestoreSelectedPRConsumesMissingSelection(t *testing.T) {
+	pr42 := prrow.Data{Primary: &data.PullRequestData{Number: 42, Url: "https://github.com/acme/app/pull/42"}}
+	m := Model{
+		Prs:           []prrow.Data{pr42},
+		selectedPRKey: "https://github.com/acme/app/pull/99",
+	}
+
+	m.restoreSelectedPR()
+
+	require.Empty(t, m.selectedPRKey, "later page fetches must not steal selection")
 }

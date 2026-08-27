@@ -550,10 +550,15 @@ func (m *Model) FetchNextPageSectionRows() []tea.Cmd {
 }
 
 func (m *Model) ResetRows() {
+	m.rememberSelectedPR(m.CurrRow())
 	m.Prs = nil
 	m.sessionMergedPRKeys = make(map[string]bool)
 	m.sessionMergedExtraCount = 0
 	m.BaseModel.ResetRows()
+}
+
+func (m *Model) rememberSelectedPR(index int) {
+	m.selectedPRKey = selectedPRKey(m.Prs, index)
 }
 
 func prKey(pr prrow.Data) string {
@@ -696,7 +701,9 @@ func selectedPRKey(prs []prrow.Data, index int) string {
 }
 
 func (m *Model) restoreSelectedPR() {
-	if index, ok := findPRIndex(m.Prs, m.selectedPRKey); ok {
+	key := m.selectedPRKey
+	m.selectedPRKey = ""
+	if index, ok := findPRIndex(m.Prs, key); ok {
 		m.Table.SetCurrItem(index)
 	}
 }

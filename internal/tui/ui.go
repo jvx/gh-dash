@@ -743,20 +743,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		cmds = append(cmds, fetchSectionsCmds, m.tabs.Init(), fetchUser,
-			m.doRefreshAtInterval(), m.doUpdateFooterAtInterval())
-
-	case intervalRefresh:
-		newSections, fetchSectionsCmds := m.fetchAllViewSections()
-		m.setCurrentViewSections(newSections)
-		cmds = append(cmds, fetchSectionsCmds, m.doRefreshAtInterval())
-
-	case interface{ ActionSectionID() int }:
-		// Route Actions polling to its originating section even if another
-		// view or section is selected when the timer fires.
-		sectionID := msg.ActionSectionID()
-		if currSection == nil || currSection.GetType() != actionssection.SectionType || currSection.GetId() != sectionID {
-			cmds = append(cmds, m.updateSection(sectionID, actionssection.SectionType, msg))
-		}
+			m.doUpdateFooterAtInterval())
 
 	case userFetchedMsg:
 		m.ctx.User = msg.user
@@ -1948,21 +1935,6 @@ func fetchUser() tea.Msg {
 	return userFetchedMsg{
 		user: user,
 	}
-}
-
-type intervalRefresh time.Time
-
-func (m *Model) doRefreshAtInterval() tea.Cmd {
-	if m.ctx.Config.Defaults.RefetchIntervalMinutes == 0 {
-		return nil
-	}
-
-	return tea.Tick(
-		time.Minute*time.Duration(m.ctx.Config.Defaults.RefetchIntervalMinutes),
-		func(t time.Time) tea.Msg {
-			return intervalRefresh(t)
-		},
-	)
 }
 
 type updateFooterMsg struct{}

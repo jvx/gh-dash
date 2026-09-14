@@ -2,7 +2,6 @@ package reposection
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -323,61 +322,6 @@ func (m *Model) fetchPRCmd(branch string) []tea.Cmd {
 			},
 		}
 	}}
-}
-
-type RefreshBranchesMsg struct {
-	id   int
-	time time.Time
-}
-
-type RefreshPrsMsg struct {
-	id   int
-	time time.Time
-}
-
-var (
-	lastID int
-	idMtx  sync.Mutex
-)
-
-// Return the next ID we should use on the Model.
-func nextID() int {
-	idMtx.Lock()
-	defer idMtx.Unlock()
-	lastID++
-	return lastID
-}
-
-func (m *Model) tickRefreshBranchesCmd() tea.Cmd {
-	return tea.Tick(
-		time.Second*time.Duration(m.Ctx.Config.Repo.BranchesRefetchIntervalSeconds),
-		func(t time.Time) tea.Msg {
-			return RefreshBranchesMsg{id: m.refreshId, time: t}
-		},
-	)
-}
-
-func (m *Model) tickFetchPrsCmd() tea.Cmd {
-	return tea.Tick(
-		time.Second*time.Duration(m.Ctx.Config.Repo.PrsRefetchIntervalSeconds),
-		func(t time.Time) tea.Msg {
-			return RefreshPrsMsg{id: m.refreshId, time: t}
-		},
-	)
-}
-
-func (m *Model) onRefreshBranchesMsg() []tea.Cmd {
-	cmds := make([]tea.Cmd, 0)
-	cmds = append(cmds, m.readRepoCmd()...)
-	cmds = append(cmds, m.tickRefreshBranchesCmd())
-	return cmds
-}
-
-func (m *Model) onRefreshPrsMsg() []tea.Cmd {
-	cmds := make([]tea.Cmd, 0)
-	cmds = append(cmds, m.fetchRepoCmd()...)
-	cmds = append(cmds, m.tickFetchPrsCmd())
-	return cmds
 }
 
 func (m *Model) OpenGithub() tea.Cmd {

@@ -167,7 +167,14 @@ func (m *Model) renderViewButton(view config.ViewType) string {
 
 func (m *Model) renderViewSwitcher(ctx *context.ProgramContext) string {
 	var repo string
-	if m.ctx.RepoPath != "" {
+	if ctx.View == config.ActionsView && ctx.HasActionsRepository() {
+		actionsRepo := ctx.ActionsRepository()
+		name := actionsRepo.Owner + "/" + actionsRepo.Name
+		if actionsRepo.Host != "" && actionsRepo.Host != "github.com" {
+			name = actionsRepo.Host + "/" + name
+		}
+		repo = ctx.Styles.Common.FooterStyle.Render(fmt.Sprintf(" %s", name))
+	} else if m.ctx.RepoPath != "" {
 		name := path.Base(m.ctx.RepoPath)
 		if m.ctx.RepoUrl != "" {
 			name = git.GetRepoShortName(m.ctx.RepoUrl)

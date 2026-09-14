@@ -2,9 +2,11 @@ package data
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	gh "github.com/cli/go-gh/v2/pkg/api"
 	"github.com/stretchr/testify/require"
@@ -142,4 +144,46 @@ func TestFetchWorkflowsPaginatesAndPreservesInt64IDs(t *testing.T) {
 	require.Len(t, workflows, 101)
 	require.Equal(t, int64(9007199254740993), workflows[100].ID)
 	require.Equal(t, "Deploy", workflows[100].Name)
+}
+
+func TestFetchActionRepositoriesPaginatesDeduplicatesAndKeepsEnterpriseIdentity(t *testing.T) {
+	requestCount := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/user/repos", func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		require.Equal(t, "owner,collaborator,organization_member", r.URL.Query().Get("affiliation"))
+		require.Equal(t, "pushed", r.URL.Query().Get("sort"))
+		require.Equal(t, "desc", r.URL.Query().Get("direction"))
+		require.Equal(t, "100", r.URL.Query().Get("per_page"))
+
+		var repositories []actionRepositoryAPI
+		if r.URL.Query().Get("page") == "1" {
+			for i := 0; i < 100; i++ {
+				repo := actionRepositoryAPI{
+					Name:     fmt.Sprintf("repo-%03d", i),
+					FullName: fmt.Sprintf("acme/repo-%03d", i),
+					PushedAt: time.Unix(int64(i), 0),
+				}
+				repo.Owner.Login = "acme"
+				repositories = append(repositories, repo)
+			}
+		} else {
+			duplicate := actionRepositoryAPI{Name: "repo-099", FullName: "acme/repo-099", PushedAt: time.Unix(99, 0)}
+			duplicate.Owner.Login = "acme"
+			newest := actionRepositoryAPI{Name: "newest", FullName: "other/newest", PushedAt: time.Unix(1000, 0)}
+			newest.Owner.Login = "other"
+			repositories = []actionRepositoryAPI{duplicate, newest}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(repositories))
+	})
+
+	repositories, err := fetchActionRepositories(newActionsTestClient(t, mux), "ghe.example.com")
+	require.NoError(t, err)
+	require.Equal(t, 2, requestCount)
+	require.Len(t, repositories, 101)
+	require.Equal(t, ActionRepository{
+		Host: "ghe.example.com", Owner: "other", Name: "newest", FullName: "other/newest", PushedAt: time.Unix(1000, 0),
+	}, repositories[0])
+	require.Equal(t, "ghe.example.com", repositories[100].Host)
 }

@@ -5,16 +5,21 @@ import (
 )
 
 type ActionsKeyMap struct {
-	FocusWorkflows key.Binding
-	FocusRuns      key.Binding
-	SelectWorkflow key.Binding
-	Watch          key.Binding
-	Rerun          key.Binding
-	Dispatch       key.Binding
-	SwitchView     key.Binding
+	ChooseRepository key.Binding
+	FocusWorkflows   key.Binding
+	FocusRuns        key.Binding
+	SelectWorkflow   key.Binding
+	Watch            key.Binding
+	Rerun            key.Binding
+	Dispatch         key.Binding
+	SwitchView       key.Binding
 }
 
 var ActionsKeys = ActionsKeyMap{
+	ChooseRepository: key.NewBinding(
+		key.WithKeys("c"),
+		key.WithHelp("c", "choose repository"),
+	),
 	FocusWorkflows: key.NewBinding(
 		key.WithKeys("left", "h"),
 		key.WithHelp("←/h", "focus workflows"),
@@ -47,6 +52,7 @@ var ActionsKeys = ActionsKeyMap{
 
 func ActionsFullHelp() []key.Binding {
 	return []key.Binding{
+		ActionsKeys.ChooseRepository,
 		ActionsKeys.FocusWorkflows,
 		ActionsKeys.FocusRuns,
 		ActionsKeys.SelectWorkflow,

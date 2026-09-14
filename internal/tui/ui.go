@@ -237,6 +237,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.ctx.View == config.ActionsView {
+			if actionSection, ok := currSection.(*actionssection.Model); ok {
+				if actionSection.RepositoryPickerOpen() {
+					return m, m.updateActionsSectionWithRepositoryReset(actionSection, msg)
+				}
+				if key.Matches(msg, keys.ActionsKeys.ChooseRepository) {
+					return m, actionSection.OpenRepositoryPicker()
+				}
+			}
+		}
+
 		if m.isUserDefinedKeybinding(msg) {
 			cmd = m.executeKeybinding(msg.String())
 			return m, cmd
@@ -1108,6 +1119,18 @@ func (m *Model) markNotificationAsRead(notificationId string) {
 		Unread: false,
 	}
 	m.updateNotificationSections(readStateMsg)
+}
+
+func (m *Model) updateActionsSectionWithRepositoryReset(actionSection *actionssection.Model, msg tea.Msg) tea.Cmd {
+	oldIdentity := m.ctx.ActionsRepositoryIdentity()
+	updated, cmd := actionSection.Update(msg)
+	m.actions[actionSection.GetId()] = updated
+	if oldIdentity != m.ctx.ActionsRepositoryIdentity() {
+		m.actionView.Reset()
+		m.sidebar.SetContent("")
+		m.sidebar.ScrollToTop()
+	}
+	return cmd
 }
 
 func (m *Model) handleActionsNavigation(msg tea.KeyMsg, actionSection *actionssection.Model) (bool, tea.Cmd) {
